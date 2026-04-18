@@ -3,24 +3,7 @@
 </svelte:head>
 
 <script lang="ts">
-	import { page } from '$app/state';
-	import { onMount } from 'svelte';
-	import { supabase } from '$lib/supabase';
-	import type { Session, User } from '@supabase/supabase-js';
-
-	type SupabaseLikeError = {
-		message?: string;
-		details?: string;
-		hint?: string;
-		code?: string;
-	};
-
-	const navLinks = [
-		{ label: 'Features', href: '#features', active: true },
-		{ label: 'Science', href: '#science' },
-		{ label: 'Journal', href: '#journal' },
-		{ label: 'Pricing', href: '#pricing' }
-	];
+	import SiteNav from '$lib/components/SiteNav.svelte';
 
 	const footerLinks = [
 		{ label: 'Privacy Policy', href: '#' },
@@ -29,151 +12,10 @@
 		{ label: 'Contact Us', href: '#' }
 	];
 
-	let currentSession = $state<Session | null>(null);
-	let currentUser = $state<User | null>(null);
-	let authStatus = $state('');
-	let isSigningOut = $state(false);
-
-	const pathname = $derived(page.url.pathname);
-	const displayName = $derived(getDisplayName(currentUser));
-	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
-
-	onMount(() => {
-		if (!supabase) {
-			return;
-		}
-
-		void supabase.auth.getSession().then(({ data, error }) => {
-			if (error) {
-				authStatus = describeError(error, 'Failed to restore session.');
-				return;
-			}
-
-			currentSession = data.session;
-			currentUser = data.session?.user ?? null;
-		});
-
-		const {
-			data: { subscription }
-		} = supabase.auth.onAuthStateChange((_event, session) => {
-			currentSession = session;
-			currentUser = session?.user ?? null;
-			authStatus = '';
-		});
-
-		return () => {
-			subscription.unsubscribe();
-		};
-	});
-
-	function describeError(error: unknown, fallback: string): string {
-		if (error instanceof Error && error.message) {
-			return error.message;
-		}
-
-		if (error && typeof error === 'object') {
-			const candidate = error as SupabaseLikeError;
-			const parts = [candidate.message, candidate.details, candidate.hint].filter(Boolean);
-			if (parts.length > 0) {
-				return parts.join(' ');
-			}
-
-			if (candidate.code) {
-				return `${fallback} (${candidate.code})`;
-			}
-		}
-
-		return fallback;
-	}
-
-	function getDisplayName(user: User | null): string {
-		if (!user) {
-			return 'Friend';
-		}
-
-		const metadata = user.user_metadata as Record<string, unknown> | undefined;
-		const fullName = typeof metadata?.full_name === 'string' ? metadata.full_name.trim() : '';
-		const name = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
-		const givenName = typeof metadata?.given_name === 'string' ? metadata.given_name.trim() : '';
-
-		if (givenName) {
-			return givenName;
-		}
-
-		if (fullName) {
-			return fullName.split(' ')[0] ?? fullName;
-		}
-
-		if (name) {
-			return name.split(' ')[0] ?? name;
-		}
-
-		if (user.email) {
-			return user.email.split('@')[0] ?? 'Friend';
-		}
-
-		return 'Friend';
-	}
-
-	async function signOut() {
-		if (!supabase || isSigningOut) {
-			return;
-		}
-
-		isSigningOut = true;
-		authStatus = '';
-
-		try {
-			const { error } = await supabase.auth.signOut();
-			if (error) {
-				throw error;
-			}
-
-			currentSession = null;
-			currentUser = null;
-		} catch (error) {
-			authStatus = describeError(error, 'Failed to sign out.');
-		} finally {
-			isSigningOut = false;
-		}
-	}
 </script>
 
 <main class="landing-shell">
-	<header class="topbar">
-		<nav class="topbar-inner">
-			<a class="site-brand" href="/">Sanctuary</a>
-
-			<div class="nav-links" aria-label="Primary">
-				{#each navLinks as link}
-					<a class:active={link.active} href={link.href}>{link.label}</a>
-				{/each}
-			</div>
-
-			{#if currentSession && currentUser}
-				<div class="site-actions">
-					{#if pathname !== '/app'}
-						<a class="nav-button nav-button-primary" href="/app">Dashboard</a>
-					{/if}
-					{#if pathname !== '/'}
-						<a class="nav-button nav-button-subtle" href="/">Home</a>
-					{/if}
-					<button class="nav-button nav-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
-						{isSigningOut ? 'Signing out...' : 'Sign out'}
-					</button>
-					<div class="user-chip" aria-label="Signed in user">
-						<span class="user-avatar">{avatarLetter}</span>
-						<span class="user-name">{displayName}</span>
-					</div>
-				</div>
-			{:else}
-				<a class="nav-button nav-button-primary" href="/app">Login</a>
-			{/if}
-		</nav>
-		{#if authStatus}
-			<p class="nav-status">{authStatus}</p>
-		{/if}
-	</header>
+	<SiteNav />
 
 	<section class="hero">
 		<div class="hero-copy">
@@ -340,15 +182,87 @@
 		--primary-dim: #005a50;
 		--on-primary: #c1fff2;
 		--on-primary-container: #00594f;
+		--body-overlay-a: rgba(91, 244, 222, 0.32);
+		--body-overlay-b: rgba(252, 192, 37, 0.12);
+		--body-top: #fbfdff;
+		--body-bottom: #eff5ff;
+		--card-bg: rgba(255, 255, 255, 0.78);
+		--card-shadow: 0 18px 40px rgba(33, 47, 66, 0.08);
+		--play-bg: rgba(255, 255, 255, 0.65);
+		--play-shadow: 0 16px 35px rgba(33, 47, 66, 0.12);
+		--stage-border: rgba(255, 255, 255, 0.45);
+	}
+
+	:global(:root[data-theme='dark']) {
+		--surface-container-lowest: #0d1c2a;
+		--on-secondary-container: #d9ebff;
+		--surface-bright: #0e1b28;
+		--secondary-fixed: #1b455f;
+		--tertiary-fixed-dim: #c89200;
+		--secondary-fixed-dim: #16394f;
+		--primary-fixed: #67efe0;
+		--primary-fixed-dim: #49d7c9;
+		--surface-container-low: #0f2231;
+		--tertiary-fixed: #f0b91d;
+		--surface-container-high: #173244;
+		--on-secondary-fixed-variant: #d9ebff;
+		--on-secondary: #e8f2ff;
+		--inverse-on-surface: #0b1825;
+		--secondary: #8ac3ff;
+		--error-dim: #c95b67;
+		--error-container: #5d1d25;
+		--primary-container: #103f3a;
+		--surface-tint: #67efe0;
+		--on-tertiary-fixed-variant: #fff0c4;
+		--outline: #6f8396;
+		--inverse-surface: #eef4ff;
+		--secondary-container: #1b455f;
+		--outline-variant: #465a6c;
+		--surface-container-highest: #1f3d52;
+		--surface-variant: #173244;
+		--on-surface: #edf5ff;
+		--on-error: #ffeff1;
+		--on-tertiary: #fff4df;
+		--surface-dim: #091521;
+		--on-primary-fixed-variant: #d8fff8;
+		--error: #ff8a95;
+		--on-background: #edf5ff;
+		--on-tertiary-container: #fff0c4;
+		--surface: #091521;
+		--tertiary: #f0b91d;
+		--on-primary-fixed: #052f2b;
+		--on-secondary-fixed: #e8f2ff;
+		--on-surface-variant: #bacbdd;
+		--on-tertiary-fixed: #4a3400;
+		--on-error-container: #ffd9dd;
+		--tertiary-dim: #dba200;
+		--tertiary-container: #5e4600;
+		--inverse-primary: #00675c;
+		--primary: #67efe0;
+		--secondary-dim: #6baee9;
+		--surface-container: #122636;
+		--background: #091521;
+		--primary-dim: #49d7c9;
+		--on-primary: #073a35;
+		--on-primary-container: #d8fff8;
+		--body-overlay-a: rgba(91, 244, 222, 0.14);
+		--body-overlay-b: rgba(240, 185, 29, 0.08);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
+		--card-bg: rgba(11, 24, 36, 0.82);
+		--card-shadow: 0 22px 48px rgba(0, 0, 0, 0.35);
+		--play-bg: rgba(16, 33, 46, 0.9);
+		--play-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+		--stage-border: rgba(186, 203, 221, 0.16);
 	}
 
 	:global(body) {
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.32), transparent 28%),
-			radial-gradient(circle at top right, rgba(252, 192, 37, 0.12), transparent 25%),
-			linear-gradient(180deg, #fbfdff 0%, var(--background) 45%, #eff5ff 100%);
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 28%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 25%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 45%, var(--body-bottom) 100%);
 		color: var(--on-background);
 	}
 
@@ -376,72 +290,6 @@
 		padding: 0 1.5rem 6rem;
 	}
 
-	.topbar {
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		padding-top: 1rem;
-	}
-
-	.topbar-inner {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		max-width: 78rem;
-		margin: 0 auto;
-		padding: 0.25rem 0;
-	}
-
-	.site-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		flex-wrap: wrap;
-		justify-content: flex-end;
-	}
-
-	.user-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.7rem;
-		padding: 0.35rem 0.8rem 0.35rem 0.35rem;
-		border-radius: 999px;
-		background: var(--surface-container-low);
-	}
-
-	.user-avatar {
-		display: grid;
-		place-items: center;
-		width: 2.4rem;
-		height: 2.4rem;
-		border-radius: 999px;
-		background: linear-gradient(135deg, var(--primary), var(--primary-fixed-dim));
-		color: white;
-		font-weight: 800;
-		font-size: 0.95rem;
-	}
-
-	.user-name {
-		font-weight: 800;
-		color: var(--on-surface);
-	}
-
-	.site-brand {
-		font-size: 1.3rem;
-		font-weight: 800;
-		letter-spacing: 0.02em;
-		color: var(--primary);
-		text-decoration: none;
-	}
-
-	.nav-links {
-		display: flex;
-		align-items: center;
-		gap: 1.8rem;
-	}
-
-	.nav-links a,
 	.footer-links a,
 	.hero-actions p a {
 		color: var(--on-surface-variant);
@@ -452,20 +300,11 @@
 			border-color 160ms ease;
 	}
 
-	.nav-links a:hover,
 	.footer-links a:hover,
 	.hero-actions p a:hover {
 		color: var(--primary);
 	}
 
-	.nav-links a.active {
-		color: var(--primary);
-		font-weight: 700;
-		padding-bottom: 0.35rem;
-		border-bottom: 2px solid #14b8a6;
-	}
-
-	.nav-button,
 	.primary-action,
 	.secondary-action {
 		display: inline-flex;
@@ -480,45 +319,10 @@
 			filter 160ms ease;
 	}
 
-	.nav-button {
-		padding: 0.9rem 1.25rem;
-		border-radius: 999px;
-		box-shadow: none;
-		border: none;
-		font: inherit;
-		cursor: pointer;
-	}
-
-	.nav-button-primary {
-		background: linear-gradient(135deg, var(--primary), #128d7f);
-		color: white;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
-	}
-
-	.nav-button-subtle {
-		background: rgba(201, 222, 255, 0.7);
-		color: var(--on-surface);
-	}
-
-	.nav-button-ghost {
-		background: transparent;
-		color: var(--on-surface-variant);
-		border: 1px solid rgba(160, 174, 197, 0.4);
-	}
-
-	.nav-button:hover,
 	.primary-action:hover,
 	.secondary-action:hover {
 		transform: translateY(-1px) scale(1.01);
 		filter: brightness(1.03);
-	}
-
-	.nav-status {
-		max-width: 78rem;
-		margin: 0.65rem auto 0;
-		padding: 0 0.4rem;
-		font-size: 0.92rem;
-		color: var(--on-surface-variant);
 	}
 
 	.hero {
@@ -599,10 +403,10 @@
 		width: 6rem;
 		height: 6rem;
 		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.65);
+		background: var(--play-bg);
 		backdrop-filter: blur(14px);
 		color: var(--primary);
-		box-shadow: 0 16px 35px rgba(33, 47, 66, 0.12);
+		box-shadow: var(--play-shadow);
 	}
 
 	.play-button .material-symbols-outlined {
@@ -621,7 +425,7 @@
 	.stage-frame {
 		position: absolute;
 		inset: 0;
-		border: 12px solid rgba(255, 255, 255, 0.45);
+		border: 12px solid var(--stage-border);
 		border-radius: 1.6rem;
 		pointer-events: none;
 	}
@@ -678,8 +482,8 @@
 		gap: 1.5rem;
 		padding: 2.4rem;
 		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.78);
-		box-shadow: 0 18px 40px rgba(33, 47, 66, 0.08);
+		background: var(--card-bg);
+		box-shadow: var(--card-shadow);
 	}
 
 	.bento-card h3 {
@@ -888,19 +692,6 @@
 	}
 
 	@media (max-width: 960px) {
-		.topbar-inner {
-			flex-wrap: wrap;
-			justify-content: center;
-		}
-
-		.nav-links {
-			display: none;
-		}
-
-		.site-actions {
-			justify-content: center;
-		}
-
 		.bento-grid {
 			grid-template-columns: 1fr;
 		}
@@ -929,20 +720,6 @@
 	@media (max-width: 640px) {
 		.landing-shell {
 			padding-inline: 1rem;
-		}
-
-		.topbar-inner {
-			padding: 1rem;
-		}
-
-		.nav-button {
-			padding-inline: 1rem;
-		}
-
-		.site-actions,
-		.user-chip,
-		.nav-button {
-			width: 100%;
 		}
 
 		.hero {

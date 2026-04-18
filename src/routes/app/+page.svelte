@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
+	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
@@ -60,13 +60,11 @@
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let isSigningOut = $state(false);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
 	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
-	let helperReply = $state('');
+	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
 	let helperSource = $state<'gemini' | 'fallback' | ''>('');
@@ -92,7 +90,6 @@
 				: 'Action recommended'
 	);
 	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
-	const pathname = $derived(page.url.pathname);
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 
@@ -199,31 +196,6 @@
 			authStatus = describeError(error, `Failed to sign in with ${provider}.`);
 		} finally {
 			isSigningIn = null;
-		}
-	}
-
-	async function signOut() {
-		if (!supabase || isSigningOut) {
-			return;
-		}
-
-		isSigningOut = true;
-		authStatus = '';
-
-		try {
-			const { error } = await supabase.auth.signOut();
-			if (error) {
-				throw error;
-			}
-
-			currentSession = null;
-			currentUser = null;
-			submitStatus = '';
-			lastSavedCheckIn = null;
-		} catch (error) {
-			authStatus = describeError(error, 'Failed to sign out.');
-		} finally {
-			isSigningOut = false;
 		}
 	}
 
@@ -380,7 +352,6 @@
 
 	async function askGeminiHelper() {
 		helperStatus = '';
-		helperReply = '';
 		helperSource = '';
 
 		const question = helperQuestion.trim();
@@ -421,16 +392,17 @@
 				throw new Error(payload?.error ?? 'Failed to get helper response');
 			}
 
-			helperReply = payload.reply ?? '';
-			if (!helperReply) {
+			const reply = payload.reply ?? '';
+			if (!reply) {
 				throw new Error('Kelp returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
 				...nextHistory,
-				{ role: 'assistant', text: helperReply }
+				{ role: 'assistant', text: reply }
 			];
 			helperHistory = updatedHistory.slice(-8);
+			helperQuestion = '';
 
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			helperStatus = payload?.warning ?? 'Kelp replied.';
@@ -480,35 +452,14 @@
 		</section>
 	</main>
 {:else}
-<header class="site-nav-shell">
-	<nav class="site-nav" aria-label="Global">
-		<a class="site-brand" href="/">Sanctuary</a>
-
-		<div class="site-actions">
-			{#if pathname !== '/app'}
-				<a class="nav-button nav-button-primary" href="/app">Dashboard</a>
-			{/if}
-			{#if pathname !== '/'}
-				<a class="nav-button nav-button-subtle" href="/">Home</a>
-			{/if}
-			<button class="nav-button nav-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
-				{isSigningOut ? 'Signing out...' : 'Sign out'}
-			</button>
-
-			<div class="user-chip" aria-label="Signed in user">
-				<span class="avatar user-avatar">{avatarLetter}</span>
-				<span class="user-name">{displayName}</span>
-			</div>
-		</div>
-	</nav>
-</header>
+<SiteNav />
 
 <main class="app-shell">
 
 	<aside class="sidebar kit-panel">
 		<div class="sidebar-block">
-			<p class="brand-kicker">Sanctuary</p>
-			<h2 class="sidebar-title">Your calm command center</h2>
+			<!-- <p class="brand-kicker">Sanctuary</p> -->
+			<h2 class="sidebar-title">Command center</h2>
 
 			<div class="profile-card">
 				<div class="avatar">{avatarLetter}</div>
@@ -544,7 +495,7 @@
 		<section class="hero" id="dashboard">
 			<div>
 				<h1>Welcome back, Alex</h1>
-				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
+				<!-- <p class="hero-copy">Today is a beautiful day to nurture your mind.</p> -->
 			</div>
 
 			<div class="hero-streak kit-panel">
@@ -773,18 +724,9 @@
 							</div>
 						{/each}
 					{:else}
-						<div class="chat-bubble">
-							<p class="chat-author">Kelp</p>
-							<p>
-								Hello Alex! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
-							</p>
-						</div>
-					{/if}
-
-					{#if helperReply}
-						<div class="chat-bubble">
-							<p class="chat-author">Latest Reply</p>
-							<p>{helperReply}</p>
+						<div class="chat-empty-state">
+							<p class="chat-empty-title">No messages yet.</p>
+							<p class="chat-empty-copy">Send a question when you want a quick plan, perspective, or reset.</p>
 						</div>
 					{/if}
 				</div>
@@ -885,6 +827,31 @@
 		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
 	}
 
+	:global(:root[data-theme='dark']) {
+		--background: #091521;
+		--surface-container-lowest: #0d1c2a;
+		--secondary: #8ac3ff;
+		--tertiary-container: #5e4600;
+		--surface-container-high: #173244;
+		--error: #ff8a95;
+		--surface-container-highest: #1f3d52;
+		--on-surface: #edf5ff;
+		--on-tertiary-container: #fff0c4;
+		--surface: #091521;
+		--surface-container: #122636;
+		--surface-container-low: #0f2231;
+		--on-surface-variant: #bacbdd;
+		--primary-dim: #49d7c9;
+		--outline: #6f8396;
+		--primary: #67efe0;
+		--on-primary: #073a35;
+		--primary-container: #103f3a;
+		--on-secondary-container: #d9ebff;
+		--secondary-container: #1b455f;
+		--outline-variant: #465a6c;
+		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
+	}
+
 	:global(html) {
 		scroll-behavior: smooth;
 	}
@@ -975,87 +942,6 @@
 
 	.mobile-footer {
 		display: none;
-	}
-
-	.site-nav-shell {
-		position: sticky;
-		top: 0;
-		z-index: 80;
-		padding: 1.25rem 1.5rem 0;
-	}
-
-	.site-nav {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.25rem 0;
-	}
-
-	.site-brand {
-		font-size: 1.3rem;
-		font-weight: 800;
-		color: var(--primary);
-		text-decoration: none;
-		letter-spacing: 0.02em;
-	}
-
-	.site-actions {
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: 0.8rem;
-		flex-wrap: wrap;
-	}
-
-	.user-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.7rem;
-		padding: 0.35rem 0.8rem 0.35rem 0.35rem;
-		border-radius: 999px;
-		background: var(--surface-container-low);
-	}
-
-	.user-avatar {
-		width: 2.4rem;
-		height: 2.4rem;
-		font-size: 0.95rem;
-	}
-
-	.user-name {
-		font-weight: 800;
-		color: var(--on-surface);
-	}
-
-	.nav-button {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0.9rem 1.25rem;
-		border-radius: 999px;
-		text-decoration: none;
-		font: inherit;
-		font-weight: 800;
-		cursor: pointer;
-		border: none;
-	}
-
-	.nav-button-primary {
-		background: linear-gradient(135deg, var(--primary), #128d7f);
-		color: white;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
-	}
-
-	.nav-button-subtle {
-		background: rgba(201, 222, 255, 0.7);
-		color: var(--on-surface);
-	}
-
-	.nav-button-ghost {
-		background: transparent;
-		color: var(--on-surface-variant);
-		border: 1px solid rgba(160, 174, 197, 0.4);
 	}
 
 	.sidebar {
@@ -1647,6 +1533,33 @@
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
 	}
 
+	.chat-empty-state {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		min-height: 100%;
+		padding: 1.1rem;
+		border: 1px dashed rgba(180, 194, 216, 0.65);
+		border-radius: 1.3rem;
+		text-align: center;
+		color: var(--on-surface-variant);
+	}
+
+	.chat-empty-title,
+	.chat-empty-copy {
+		margin: 0;
+	}
+
+	.chat-empty-title {
+		font-weight: 700;
+		color: var(--on-surface);
+	}
+
+	.chat-empty-copy {
+		margin-top: 0.35rem;
+		line-height: 1.55;
+	}
+
 	.chat-user {
 		margin-left: auto;
 		border-radius: 1.2rem 1.2rem 0.4rem 1.2rem;
@@ -1839,25 +1752,8 @@
 	}
 
 	@media (max-width: 720px) {
-		.site-nav-shell,
 		.auth-shell {
 			padding-inline: 1rem;
-		}
-
-		.site-nav {
-			border-radius: 1.5rem;
-			padding: 1rem;
-		}
-
-		.site-actions {
-			width: 100%;
-			justify-content: flex-start;
-		}
-
-		.user-chip,
-		.nav-button {
-			width: 100%;
-			justify-content: center;
 		}
 
 		.hero {
