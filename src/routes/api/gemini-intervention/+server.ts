@@ -13,6 +13,21 @@ type GeminiRequestBody = {
   stressor?: string;
 };
 
+function shouldUseFallback(result: { ok: false; status: number; message: string }): boolean {
+  const normalized = result.message.toLowerCase();
+
+  return (
+    result.status === 429 ||
+    result.status === 500 ||
+    result.status === 503 ||
+    normalized.includes('high demand') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('rate-limited') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('temporarily unavailable')
+  );
+}
+
 function fallbackInterventionPlan(body: GeminiRequestBody): string {
   const high = body.stressLevel === 'high' || (body.stressScore ?? 0) >= 70;
 
@@ -65,10 +80,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     model
   });
 
-  if (!result.ok && result.status === 429) {
+  if (!result.ok && shouldUseFallback(result)) {
     return json({
       plan: fallbackInterventionPlan(body),
-      warning: 'Gemini rate-limited (429). Showing local fallback intervention plan.',
+      warning: `Gemini is temporarily unavailable. Showing local fallback intervention plan instead. (${result.model})`,
       source: 'fallback'
     });
   }

@@ -15,30 +15,85 @@ type HelperRequestBody = {
   stressor?: string;
 };
 
+function shouldUseFallback(result: { ok: false; status: number; message: string }): boolean {
+  const normalized = result.message.toLowerCase();
+
+  return (
+    result.status === 429 ||
+    result.status === 500 ||
+    result.status === 503 ||
+    normalized.includes('high demand') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('rate-limited') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('temporarily unavailable')
+  );
+}
+
 function fallbackHelperReply(body: HelperRequestBody, question: string): string {
   const persona = body.persona ?? 'calm-coach';
+  const normalizedQuestion = question.toLowerCase();
+  const stressor = body.stressor?.trim() || 'general overload';
+  const highStress = body.stressLevel === 'high';
+  const focusRequest =
+    normalizedQuestion.includes('focus') ||
+    normalizedQuestion.includes('deadline') ||
+    normalizedQuestion.includes('study');
+  const celebrationRequest =
+    normalizedQuestion.includes('victory') ||
+    normalizedQuestion.includes('win') ||
+    normalizedQuestion.includes('progress');
+  const breathingRequest =
+    normalizedQuestion.includes('breath') ||
+    normalizedQuestion.includes('panic') ||
+    normalizedQuestion.includes('overwhelm');
+
   const opener =
     persona === 'tough-love'
-      ? 'You are not stuck, you are overloaded. We fix that right now.'
+      ? highStress
+        ? 'You do not need a perfect plan. You need one steady move right now.'
+        : 'You already know enough to begin. Let us make this concrete.'
       : persona === 'study-planner'
-        ? 'Let us turn this into a short, clear plan.'
-        : 'You are carrying a lot right now, and we can stabilize quickly.';
+        ? 'Let us turn this into a short plan you can actually follow.'
+        : highStress
+          ? 'You are carrying a lot right now, so let us lower the pressure first.'
+          : 'We can make this feel lighter with one clear next move.';
 
-  const stressHint =
-    body.stressLevel === 'high'
-      ? 'Start with a 60-second breathing reset before any task.'
-      : 'Take a 2-minute reset, then begin one tiny task.';
+  const steps = breathingRequest
+    ? [
+        '1. Put both feet on the floor and exhale longer than you inhale for five breaths.',
+        '2. Name the next tiny action out loud so your brain has one target, not ten.',
+        `3. Write one sentence about what matters most with "${stressor}" in the next hour.`
+      ]
+    : celebrationRequest
+      ? [
+          '1. Write down the specific win in one sentence so it feels real.',
+          '2. Note what helped you get there, because that is the part worth repeating.',
+          '3. Choose one small reward or recovery step before you move to the next task.'
+        ]
+      : focusRequest
+        ? [
+            '1. Close every tab or app that is not needed for the next 10 minutes.',
+            '2. Pick one task that can be started, not finished, in five minutes.',
+            `3. If "${stressor}" is crowding your head, write it on paper so it stops taking up working memory.`
+          ]
+        : [
+            highStress
+              ? '1. Slow the pace for one minute before you try to solve anything.'
+              : '1. Start with the smallest task that will make the rest of the day easier.',
+            '2. Shrink the next action until it feels almost too easy to avoid.',
+            `3. Decide what can wait until later so "${stressor}" stops feeling infinite.`
+          ];
 
-  return [
-    opener,
-    '',
-    `Based on your question: "${question}"`,
-    `1. ${stressHint}`,
-    '2. Pick exactly one next task that takes 5 minutes or less.',
-    '3. Put your phone away for the next 10 minutes and do only that task.',
-    `4. If the stressor is "${body.stressor?.trim() || 'general overload'}", write one sentence on what can wait until tomorrow.`,
-    'Next step: Start a 10-minute timer and do the smallest possible first task now.'
-  ].join('\n');
+  const nextStep = breathingRequest
+    ? 'Next step: Do five slow exhales right now, then send yourself a one-line plan for the next 10 minutes.'
+    : celebrationRequest
+      ? 'Next step: Capture the win in one sentence and choose the very next thing you want to protect that progress.'
+      : focusRequest
+        ? 'Next step: Start a 10-minute timer and work only on the first visible step.'
+        : 'Next step: Pick one tiny action and do it before you think about the full problem again.';
+
+  return [opener, '', `You asked: "${question}"`, ...steps, nextStep].join('\n');
 }
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
@@ -107,10 +162,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     model
   });
 
-  if (!result.ok && result.status === 429) {
+  if (!result.ok && shouldUseFallback(result)) {
     return json({
       reply: fallbackHelperReply(body, question),
-      warning: 'Gemini rate-limited (429). Showing local fallback coach response.',
+      warning: `Gemini is temporarily unavailable. Showing local fallback coach response instead. (${result.model})`,
       source: 'fallback'
     });
   }
