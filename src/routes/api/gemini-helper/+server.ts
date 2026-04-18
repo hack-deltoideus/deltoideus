@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { generateGeminiText } from '$lib/server/gemini';
+import { generateGeminiTextWithFallbacks } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type HelperRequestBody = {
@@ -14,6 +14,48 @@ type HelperRequestBody = {
   stressLevel?: string;
   stressor?: string;
 };
+
+function classifyQuestion(question: string): 'identity' | 'greeting' | 'planning' | 'reflection' | 'support' {
+  const normalized = question.toLowerCase();
+
+  if (
+    normalized.includes('your name') ||
+    normalized.includes('who are you') ||
+    normalized.includes('what are you') ||
+    normalized.includes('what can you do')
+  ) {
+    return 'identity';
+  }
+
+  if (
+    /^(hi|hello|hey|yo|good morning|good afternoon|good evening)\b/.test(normalized) ||
+    normalized === 'sup'
+  ) {
+    return 'greeting';
+  }
+
+  if (
+    normalized.includes('plan') ||
+    normalized.includes('schedule') ||
+    normalized.includes('deadline') ||
+    normalized.includes('focus') ||
+    normalized.includes('study')
+  ) {
+    return 'planning';
+  }
+
+  if (
+    normalized.includes('feel') ||
+    normalized.includes('why') ||
+    normalized.includes('stressed') ||
+    normalized.includes('anxious') ||
+    normalized.includes('overwhelmed')
+  ) {
+    return 'reflection';
+  }
+
+  return 'support';
+}
 
 function shouldUseFallback(result: { ok: false; status: number; message: string }): boolean {
   const normalized = result.message.toLowerCase();
@@ -105,6 +147,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     );
   }
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+  const models = Array.from(new Set([model, 'gemini-2.5-flash']));
 
   const body = (await request.json()) as HelperRequestBody;
   const question = body.question?.trim();
@@ -113,6 +156,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   }
 
   const persona = body.persona ?? 'calm-coach';
+  const questionType = classifyQuestion(question);
   const personaDescription =
     persona === 'tough-love'
       ? 'direct, firm, no-excuses coach who is still respectful'
@@ -126,17 +170,49 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     .map((entry) => `- ${entry.role === 'user' ? 'Student' : 'Kelp'}: ${entry.text.trim()}`)
     .join('\n');
 
-  const prompt = [
-    'You are Kelp, a student stress coach inside the Stress Buddy app.',
-    'Personality rules:',
+  const questionSpecificGuidance =
+    questionType === 'identity'
+      ? 'Reply in exactly 2 sentences. Start with "I\'m Kelp." Then briefly say how you can help with stress, focus, or planning.'
+      : questionType === 'greeting'
+        ? 'Reply in 1 short paragraph. Greet the student briefly, then offer one concrete kind of help.'
+        : questionType === 'planning'
+          ? 'Give a short actionable plan. Prioritize concrete next steps over reassurance.'
+          : questionType === 'reflection'
+            ? 'Reflect the feeling briefly, then help the student name one useful next move.'
+            : 'Answer directly and keep the reply specific to the student message.';
+
+  const systemInstruction = [
+    'You are Kelp, the AI coach inside Sanctuary.',
+    'Your name is Kelp. Never claim to be any other person or assistant.',
+    'You are having an ongoing chat with one student, not writing marketing copy.',
+    '',
+    'Core behavior:',
     `- Style: ${personaDescription}.`,
-    '- Never be cringe or overly formal.',
-    '- Keep answers concise but complete and action-focused.',
+    '- Answer the student\'s actual question first.',
+    '- Sound natural, specific, and conversational.',
+    '- Do not repeat your full introduction after the first turn.',
+    '- Do not call yourself a "student stress coach" unless the user directly asks who you are.',
+    '- Do not default to asking about the main stressor unless it is truly the best next question.',
+    '- Avoid filler, app names, and generic encouragement.',
+    '- Use the recent conversation so replies feel like a continuation, not a reset.',
+    '- Keep answers under 160 words unless the student explicitly asks for more detail.',
     '- Use plain language and avoid medical claims.',
-    '- End with one best next step prefixed with "Next step:".',
-    '- If stress sounds severe, suggest contacting a trusted person or campus support.',
-    '- Use short paragraphs or a few numbered steps when helpful.',
-    '- Keep the total answer under 220 words.',
+    '',
+    'Question handling rules:',
+    '- If the student asks your name or who you are, answer directly in 1-2 sentences.',
+    '- If asked your name, say "I\'m Kelp" and briefly describe how you can help.',
+    '- If the student greets you, greet them back briefly and offer one concrete way you can help.',
+    '- If the student asks for a plan, give short, actionable steps.',
+    '- If the student sounds highly distressed or unsafe, encourage reaching out to a trusted person or campus support.',
+    '- Include "Next step:" only when it adds value. Do not force it into every response.',
+    '',
+    'Bad pattern to avoid:',
+    '- Repeating a canned intro like "Hi there! I\'m Kelp..." on multiple turns.',
+    '- Repeating the same closing line across replies.'
+  ].join('\n');
+
+  const prompt = [
+    `Question type: ${questionType}`,
     '',
     'Current student state:',
     `- Mood: ${body.mood ?? 'n/a'}/10`,
@@ -147,19 +223,22 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Stress level: ${body.stressLevel ?? 'n/a'}`,
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`,
     '',
+    `Guidance for this reply: ${questionSpecificGuidance}`,
+    '',
     'Recent conversation:',
     recentHistory || '- No prior conversation yet.',
     '',
-    `Student question: ${question}`
+    `Student message: ${question}`
   ].join('\n');
 
-  const result = await generateGeminiText({
+  const result = await generateGeminiTextWithFallbacks({
     apiKey,
     fetch,
     prompt,
+    systemInstruction,
     temperature: 0.6,
     maxOutputTokens: 700,
-    model
+    models
   });
 
   if (!result.ok && shouldUseFallback(result)) {

@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { generateGeminiText } from '$lib/server/gemini';
+import { generateGeminiTextWithFallbacks } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type GeminiRequestBody = {
@@ -50,6 +50,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     );
   }
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+  const models = Array.from(new Set([model, 'gemini-2.5-flash']));
 
   const body = (await request.json()) as GeminiRequestBody;
 
@@ -71,13 +72,13 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`
   ].join('\n');
 
-  const result = await generateGeminiText({
+  const result = await generateGeminiTextWithFallbacks({
     apiKey,
     fetch,
     prompt,
     temperature: 0.4,
     maxOutputTokens: 420,
-    model
+    models
   });
 
   if (!result.ok && shouldUseFallback(result)) {

@@ -4,9 +4,14 @@ type GeminiOptions = {
 	apiKey: string;
 	fetch: GeminiFetch;
 	prompt: string;
+	systemInstruction?: string;
 	temperature: number;
 	maxOutputTokens: number;
 	model?: string;
+};
+
+type GeminiFallbackOptions = Omit<GeminiOptions, 'model'> & {
+	models: string[];
 };
 
 type GeminiSuccess = {
@@ -42,6 +47,7 @@ export async function generateGeminiText({
 	apiKey,
 	fetch,
 	prompt,
+	systemInstruction,
 	temperature,
 	maxOutputTokens,
 	model = 'gemini-2.5-flash-lite'
@@ -56,6 +62,13 @@ export async function generateGeminiText({
 				'x-goog-api-key': apiKey
 			},
 			body: JSON.stringify({
+				...(systemInstruction
+					? {
+							systemInstruction: {
+								parts: [{ text: systemInstruction }]
+							}
+						}
+					: {}),
 				contents: [{ role: 'user', parts: [{ text: prompt }] }],
 				generationConfig: {
 					temperature,
@@ -123,4 +136,56 @@ export async function generateGeminiText({
 			model
 		};
 	}
+}
+
+export async function generateGeminiTextWithFallbacks({
+	apiKey,
+	fetch,
+	prompt,
+	temperature,
+	maxOutputTokens,
+	models
+}: GeminiFallbackOptions): Promise<GeminiResult> {
+	let lastFailure: GeminiFailure | null = null;
+
+	for (const model of models) {
+		const result = await generateGeminiText({
+			apiKey,
+			fetch,
+			prompt,
+			temperature,
+			maxOutputTokens,
+			model
+		});
+
+		if (result.ok) {
+			return result;
+		}
+
+		lastFailure = result;
+
+		const normalized = result.message.toLowerCase();
+		const shouldTryNextModel =
+			result.status === 429 ||
+			result.status === 500 ||
+			result.status === 503 ||
+			normalized.includes('quota') ||
+			normalized.includes('resource exhausted') ||
+			normalized.includes('rate limit') ||
+			normalized.includes('temporarily unavailable') ||
+			normalized.includes('high demand');
+
+		if (!shouldTryNextModel) {
+			return result;
+		}
+	}
+
+	return (
+		lastFailure ?? {
+			ok: false,
+			status: 500,
+			message: 'No Gemini models were available to try.',
+			model: models[0] ?? 'unknown'
+		}
+	);
 }
