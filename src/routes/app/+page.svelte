@@ -5,7 +5,6 @@
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
-	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
