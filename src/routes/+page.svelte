@@ -1,49 +1,116 @@
-<script lang="ts">
+	<script lang="ts">
 	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
+	import { predictStressWindow, type StressWindowLabel } from '$lib/classifier';
+	import { calculateHrvMetrics } from '$lib/hrv';
 	import { connectHeartRateMonitor } from '$lib/polar';
-	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
+	import {
+		buddyStateFromSignals,
+		calculateStressFromPrediction,
+		cognitiveRiskFromStress,
+		interventionFor,
+		recoveryStatusFromStress,
+		type BuddyState,
+		type CognitiveStrainRisk,
+		type RecoveryStatus,
+		type StressLevel
+	} from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 
-	type SavedCheckIn = {
-		id: string;
-		created_at: string;
-		mood: number;
-		workload: number;
-		sleep_quality: number;
-		stress_score: number;
-		stress_level: StressLevel;
-		heart_rate: number | null;
-		rr_ms: number | null;
-		stressor: string | null;
+	type TimedValue = {
+		value: number;
+		timestamp: number;
 	};
 
-	let mood = $state(5);
-	let workload = $state(5);
-	let sleepQuality = $state(5);
-	let stressor = $state('');
+	type SavedStressWindow = {
+		id: string;
+		created_at: string;
+		label: StressWindowLabel;
+		note: string | null;
+		heart_rate_avg: number | null;
+		heart_rate_max: number | null;
+		rr_ms: number | null;
+		rr_series: number[];
+		rr_count: number | null;
+		rmssd_ms: number | null;
+		ln_rmssd: number | null;
+		sdnn_ms: number | null;
+	};
+
+	let windowNote = $state('');
 
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
-	let baselineHeartRate = $state(65);
+	let hrBuffer = $state<TimedValue[]>([]);
+	let rrBuffer = $state<TimedValue[]>([]);
+	let savedWindows = $state<SavedStressWindow[]>([]);
+	const currentWindowSeconds = 60;
+
+	const currentHeartWindow = $derived(hrBuffer.map((sample) => sample.value));
+	const currentRrWindow = $derived(rrBuffer.map((sample) => sample.value));
+	const currentMetrics = $derived(calculateHrvMetrics(currentRrWindow));
+	const windowCoverageSeconds = $derived(
+		rrBuffer.length >= 2
+			? Math.max(
+					0,
+					Math.round((rrBuffer[rrBuffer.length - 1].timestamp - rrBuffer[0].timestamp) / 1000)
+				)
+			: 0
+	);
+	const windowHeartRateAvg = $derived(
+		currentHeartWindow.length > 0
+			? Number(
+					(
+						currentHeartWindow.reduce((sum, value) => sum + value, 0) / currentHeartWindow.length
+					).toFixed(1)
+				)
+			: undefined
+	);
+	const windowHeartRateMax = $derived(
+		currentHeartWindow.length > 0 ? Math.max(...currentHeartWindow) : undefined
+	);
+	const windowPrediction = $derived(
+		predictStressWindow(
+			{
+				heartRateAvg: windowHeartRateAvg,
+				heartRateMax: windowHeartRateMax,
+				rmssdMs: currentMetrics.rmssdMs,
+				lnRmssd: currentMetrics.lnRmssd,
+				sdnnMs: currentMetrics.sdnnMs,
+				pnn25: currentMetrics.pnn25
+			},
+			savedWindows.map((window) => ({
+				label: window.label,
+				heartRateAvg: window.heart_rate_avg ?? undefined,
+				heartRateMax: window.heart_rate_max ?? undefined,
+				rmssdMs: window.rmssd_ms ?? undefined,
+				lnRmssd: window.ln_rmssd ?? undefined,
+				sdnnMs: window.sdnn_ms ?? undefined,
+				pnn25: calculateHrvMetrics(window.rr_series).pnn25
+			}))
+		)
+	);
+	const calmWindowCount = $derived(savedWindows.filter((window) => window.label === 'calm').length);
+	const stressedWindowCount = $derived(
+		savedWindows.filter((window) => window.label === 'stressed').length
+	);
+	const mlReady = $derived(calmWindowCount >= 2 && stressedWindowCount >= 2);
 
 	const stressResult = $derived(
-		calculateStress({
-			mood,
-			workload,
-			sleepQuality,
-			heartRate,
-			baselineHeartRate,
-			rrMs
-		})
+		calculateStressFromPrediction(windowPrediction, mlReady)
 	);
 
 	const stressScore = $derived(stressResult.score);
 	const stressLevel = $derived(stressResult.level as StressLevel);
+	const recoveryStatus = $derived(recoveryStatusFromStress(stressResult.score) as RecoveryStatus);
+	const cognitiveRisk = $derived(cognitiveRiskFromStress(stressResult.score) as CognitiveStrainRisk);
+	const buddyResult = $derived(buddyStateFromSignals(stressResult.score, recoveryStatus));
+	const buddyState = $derived(buddyResult.state as BuddyState);
 	const intervention = $derived(interventionFor(stressResult.level));
 
 	let isSubmitting = $state(false);
 	let submitStatus = $state('');
-	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
+	let lastSavedWindow = $state<SavedStressWindow | null>(null);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
@@ -59,26 +126,154 @@
 	let isConnecting = $state(false);
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
+	let sensorName = $state('Polar H9');
 	let sensorStatus = $state('Disconnected');
 
 	let stopSensor = $state<(() => Promise<void>) | null>(null);
 
 	const levelClass = $derived(`level-${stressLevel}`);
+	const recoveryClass = $derived(`recovery-${recoveryStatus}`);
+	const buddyClass = $derived(`buddy-${buddyState}`);
+	const recoveryPillClass = $derived(`pill-${recoveryStatus}`);
+	const cognitivePillClass = $derived(`pill-cognitive-${cognitiveRisk}`);
+	const levelPillClass = $derived(`pill-level-${stressLevel}`);
 	const levelLabel = $derived(
 		stressLevel === 'low' ? 'Low' : stressLevel === 'rising' ? 'Rising' : 'High'
 	);
 	const levelDescriptor = $derived(
-		stressLevel === 'low'
-			? 'Steady state'
-			: stressLevel === 'rising'
-				? 'Pressure building'
-				: 'Action recommended'
+		stressResult.isModelReady
+			? 'ML score from your labeled 60-second windows'
+			: 'Model warming up. Aim for at least 2 calm and 2 stressed windows.'
 	);
-	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
+	const streakDays = $derived(Math.max(1, Math.ceil(savedWindows.length / 3)));
+	const windowReady = $derived(
+		windowCoverageSeconds >= currentWindowSeconds &&
+			currentHeartWindow.length >= 3 &&
+			currentMetrics.sampleCount >= 8
+	);
+	const activeContextNote = $derived(windowNote.trim());
 
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
 	}
+
+	function pruneTimedWindow(values: TimedValue[], referenceTime = Date.now()): TimedValue[] {
+		const cutoff = referenceTime - currentWindowSeconds * 1000;
+		return values.filter((sample) => sample.timestamp >= cutoff);
+	}
+
+	function normalizeStressWindow(row: Record<string, unknown>): SavedStressWindow {
+		return {
+			id: String(row.id ?? ''),
+			created_at: String(row.created_at ?? ''),
+			label: row.label as StressWindowLabel,
+			note: typeof row.note === 'string' ? row.note : null,
+			heart_rate_avg: typeof row.heart_rate_avg === 'number' ? row.heart_rate_avg : null,
+			heart_rate_max: typeof row.heart_rate_max === 'number' ? row.heart_rate_max : null,
+			rr_ms: typeof row.rr_ms === 'number' ? row.rr_ms : null,
+			rr_series: Array.isArray(row.rr_series)
+				? row.rr_series
+						.map((value) => Number(value))
+						.filter((value) => Number.isFinite(value))
+				: [],
+			rr_count: typeof row.rr_count === 'number' ? row.rr_count : null,
+			rmssd_ms: typeof row.rmssd_ms === 'number' ? row.rmssd_ms : null,
+			ln_rmssd: typeof row.ln_rmssd === 'number' ? row.ln_rmssd : null,
+			sdnn_ms: typeof row.sdnn_ms === 'number' ? row.sdnn_ms : null
+		};
+	}
+
+	async function loadStressWindows() {
+		if (!supabase) {
+			return;
+		}
+
+		const { data, error } = await supabase
+			.from('stress_windows')
+			.select(
+				'id, created_at, label, note, heart_rate_avg, heart_rate_max, rr_ms, rr_series, rr_count, rmssd_ms, ln_rmssd, sdnn_ms'
+			)
+			.order('created_at', { ascending: false })
+			.limit(24);
+
+		if (error) {
+			submitStatus = error.message;
+			return;
+		}
+
+		savedWindows = (data ?? []).map((row) => normalizeStressWindow(row as Record<string, unknown>));
+	}
+
+	async function saveStressWindow(label: StressWindowLabel) {
+		submitStatus = '';
+		lastSavedWindow = null;
+
+		if (!supabase) {
+			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
+			return;
+		}
+
+		if (
+			!windowReady ||
+			windowHeartRateAvg === undefined ||
+			windowHeartRateMax === undefined ||
+			currentMetrics.rmssdMs === undefined ||
+			currentMetrics.lnRmssd === undefined ||
+			currentMetrics.sdnnMs === undefined
+		) {
+			submitStatus = 'Collect a fuller 60-second window before labeling it.';
+			return;
+		}
+
+		isSubmitting = true;
+
+		try {
+			const payload = {
+				label,
+				note: activeContextNote || null,
+				window_seconds: currentWindowSeconds,
+				heart_rate_avg: windowHeartRateAvg,
+				heart_rate_max: windowHeartRateMax,
+				rr_ms: rrMs ?? currentMetrics.meanRrMs ?? null,
+				rr_series: currentRrWindow,
+				rr_count: currentRrWindow.length,
+				rmssd_ms: currentMetrics.rmssdMs,
+				ln_rmssd: currentMetrics.lnRmssd,
+				sdnn_ms: currentMetrics.sdnnMs
+			};
+
+			const { data, error } = await supabase
+				.from('stress_windows')
+				.insert(payload)
+				.select(
+					'id, created_at, label, note, heart_rate_avg, heart_rate_max, rr_ms, rr_series, rr_count, rmssd_ms, ln_rmssd, sdnn_ms'
+				)
+				.single();
+
+			if (error) {
+				throw error;
+			}
+
+			if (!data) {
+				throw new Error('Window save succeeded, but the saved row was not returned.');
+			}
+
+			lastSavedWindow = normalizeStressWindow(data as Record<string, unknown>);
+			windowNote = '';
+			await loadStressWindows();
+			submitStatus = `Saved a ${label} window with ${currentRrWindow.length} RR samples.`;
+		} catch (error) {
+			submitStatus = error instanceof Error ? error.message : 'Failed to save labeled window.';
+		} finally {
+			isSubmitting = false;
+		}
+	}
+
+	onMount(() => {
+		if (hasSupabaseConfig) {
+			void loadStressWindows();
+		}
+	});
 
 	async function connectSensor() {
 		if (!canUseBluetooth || isConnecting) {
@@ -89,13 +284,49 @@
 		sensorStatus = 'Connecting...';
 
 		try {
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-			});
+			const connection = await connectHeartRateMonitor(
+				(reading) => {
+					const timestamp = reading.timestamp ?? Date.now();
+					heartRate = reading.heartRate;
+					rrMs = reading.rrMs;
+
+					hrBuffer = pruneTimedWindow(
+						[...hrBuffer, { value: reading.heartRate, timestamp }],
+						timestamp
+					);
+
+					if (reading.rrSeriesMs.length > 0) {
+						rrBuffer = pruneTimedWindow(
+							[
+								...rrBuffer,
+								...reading.rrSeriesMs.map((value) => ({ value, timestamp }))
+							],
+							timestamp
+						);
+					} else if (reading.rrMs !== undefined) {
+						rrBuffer = pruneTimedWindow(
+							[...rrBuffer, { value: reading.rrMs, timestamp }],
+							timestamp
+						);
+					}
+
+					sensorStatus =
+						reading.contactDetected === false
+							? `${sensorName} connected. Waiting for chest strap contact.`
+							: `${sensorName} is streaming a live ${currentWindowSeconds}-second window.`;
+				},
+				() => {
+					stopSensor = null;
+					isSensorConnected = false;
+					sensorStatus = 'Disconnected';
+				}
+			);
+
+			stopSensor = connection.stop;
+			sensorName = connection.deviceName;
 
 			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
+			sensorStatus = `${connection.deviceName} connected. Waiting for live readings...`;
 		} catch (error) {
 			sensorStatus = error instanceof Error ? error.message : 'Could not connect to sensor';
 		} finally {
@@ -117,71 +348,13 @@
 	function simulateSpike() {
 		const randomHr = 95 + Math.floor(Math.random() * 26);
 		const randomRr = 520 + Math.floor(Math.random() * 120);
+		const timestamp = Date.now();
 
 		heartRate = randomHr;
 		rrMs = randomRr;
-		sensorStatus = 'Simulated stress signal loaded';
-	}
-
-	async function submitCheckIn() {
-		submitStatus = '';
-		lastSavedCheckIn = null;
-
-		if (!supabase) {
-			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
-			return;
-		}
-
-		isSubmitting = true;
-
-		try {
-			const checkInPayload = {
-				mood,
-				workload,
-				sleep_quality: sleepQuality,
-				stress_score: stressScore,
-				stress_level: stressLevel,
-				heart_rate: heartRate,
-				rr_ms: rrMs,
-				stressor: stressor.trim() || null
-			};
-
-			const { data: savedCheckIn, error: checkInError } = await supabase
-				.from('check_ins')
-				.insert(checkInPayload)
-				.select(
-					'id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor'
-				)
-				.single();
-
-			if (checkInError) {
-				throw checkInError;
-			}
-
-			if (!savedCheckIn) {
-				throw new Error('Check-in save succeeded, but the saved row was not returned.');
-			}
-
-			lastSavedCheckIn = savedCheckIn as SavedCheckIn;
-
-			if (stressLevel === 'rising' || stressLevel === 'high') {
-				const { error: interventionError } = await supabase.from('interventions').insert({
-					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
-					trigger_level: stressLevel,
-					notes: intervention
-				});
-
-				if (interventionError) {
-					throw interventionError;
-				}
-			}
-
-			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
-		} catch (error) {
-			submitStatus = error instanceof Error ? error.message : 'Failed to save check-in';
-		} finally {
-			isSubmitting = false;
-		}
+		hrBuffer = pruneTimedWindow([...hrBuffer, { value: randomHr, timestamp }], timestamp);
+		rrBuffer = pruneTimedWindow([...rrBuffer, { value: randomRr, timestamp }], timestamp);
+		sensorStatus = 'Simulated stress window loaded.';
 	}
 
 	async function generateGeminiPlan() {
@@ -196,14 +369,19 @@
 					'Content-Type': 'application/json'
 				},
 				body: JSON.stringify({
-					mood,
-					workload,
-					sleepQuality,
 					heartRate,
 					rrMs,
+					rmssdMs: currentMetrics.rmssdMs,
+					lnRmssd: currentMetrics.lnRmssd,
+					sdnnMs: currentMetrics.sdnnMs,
+					predictionLabel: windowPrediction.label,
+					predictionConfidence: windowPrediction.confidence,
+					labeledWindowCount: savedWindows.length,
 					stressLevel,
 					stressScore,
-					stressor
+					recoveryStatus,
+					cognitiveStrainRisk: cognitiveRisk,
+					stressor: activeContextNote || null
 				})
 			});
 
@@ -254,13 +432,19 @@
 					question,
 					persona: helperPersona,
 					history: helperHistory,
-					mood,
-					workload,
-					sleepQuality,
 					heartRate,
 					rrMs,
+					rmssdMs: currentMetrics.rmssdMs,
+					lnRmssd: currentMetrics.lnRmssd,
+					sdnnMs: currentMetrics.sdnnMs,
+					predictionLabel: windowPrediction.label,
+					predictionConfidence: windowPrediction.confidence,
+					labeledWindowCount: savedWindows.length,
 					stressLevel,
-					stressor
+					stressScore,
+					recoveryStatus,
+					cognitiveStrainRisk: cognitiveRisk,
+					stressor: activeContextNote || null
 				})
 			});
 
@@ -353,7 +537,7 @@
 		<section class="hero" id="dashboard">
 			<div>
 				<h1>Welcome back, Alex</h1>
-				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
+				<p class="hero-copy">Your H9 windows, live HRV, and Monte ML readout all in one place.</p>
 			</div>
 
 			<div class="hero-streak kit-panel">
@@ -368,9 +552,9 @@
 		</section>
 
 		<section class="kit-grid">
-			<article class="stress-card kit-panel {levelClass}">
+			<article class="stress-card kit-panel {levelClass} {recoveryClass} {buddyClass}">
 				<div class="card-topline">
-					<p class="meta-label">Stress Detection</p>
+					<p class="meta-label">Physiologic Stress</p>
 					<span class="material-symbols-outlined">waves</span>
 				</div>
 
@@ -380,13 +564,38 @@
 				</div>
 
 				<div class="pill-row">
-					<p class="pill pill-primary">Level: {levelLabel}</p>
+					<p class={`pill pill-primary ${levelPillClass}`}>Level: {levelLabel}</p>
+					<p class={`pill ${recoveryPillClass}`}>Recovery: {recoveryStatus.toUpperCase()}</p>
+					<p class={`pill ${cognitivePillClass}`}>Cognitive Risk: {cognitiveRisk.toUpperCase()}</p>
 				</div>
 
 				<div class="coach-box">
-					<p class="coach-title">Coach Suggestion</p>
-					<p class="coach-copy">{intervention}</p>
+					<p class="coach-title">{buddyResult.label}</p>
+					<p class="coach-copy">{buddyResult.message}</p>
 					<p class="coach-caption">{levelDescriptor}</p>
+				</div>
+
+				<div class="coach-box metrics-box">
+					<p class="coach-title">Current HRV</p>
+					<p class="coach-copy">
+						RMSSD {currentMetrics.rmssdMs ?? '--'} ms | lnRMSSD {currentMetrics.lnRmssd ?? '--'} | SDNN {currentMetrics.sdnnMs ?? '--'} ms | pNN25 {currentMetrics.pnn25 ?? '--'}%
+					</p>
+					<p class="coach-caption">Live features from the current rolling {currentWindowSeconds}-second window.</p>
+				</div>
+
+				<div class="coach-box metrics-box">
+					<p class="coach-title">60-Second Window Classifier</p>
+					<p class="coach-copy">
+						{windowPrediction.label === 'unknown'
+							? 'Waiting for enough labeled windows'
+							: `${windowPrediction.label.toUpperCase()} window with ${Math.round(windowPrediction.confidence * 100)}% confidence`}
+					</p>
+					<p class="coach-caption">{windowPrediction.reason}</p>
+				</div>
+
+				<div class="coach-box">
+					<p class="coach-title">Immediate Intervention</p>
+					<p class="coach-copy">{intervention}</p>
 				</div>
 
 				<div class="status-group">
@@ -413,67 +622,82 @@
 			<article class="checkin-card kit-panel" id="checkin">
 				<div class="section-heading">
 					<div>
-						<h2>Daily Check-in</h2>
+						<h2>Label This Window</h2>
+						<p class="section-copy">
+							Save the last {currentWindowSeconds} seconds of Polar H9 data as a training example for Monte.
+						</p>
 					</div>
 					<div class="badge-icon accent-primary">
 						<span class="material-symbols-outlined filled-icon">favorite</span>
 					</div>
 				</div>
 
-				<div class="slider-grid">
-					<label class="slider-card">
+				<div class="slider-grid window-grid">
+					<div class="slider-card">
 						<span class="slider-title">
-							<span class="material-symbols-outlined accent-tertiary">sentiment_satisfied</span>
-							<span>Mood</span>
+							<span class="material-symbols-outlined accent-primary">timer</span>
+							<span>Window</span>
 						</span>
-						<input type="range" min="1" max="10" bind:value={mood} />
 						<span class="slider-scale">
-							<span>Gloomy</span>
-							<strong>{mood}</strong>
-							<span>Radiant</span>
+							<span>Coverage</span>
+							<strong>{windowCoverageSeconds}s</strong>
+							<span>{windowReady ? 'Ready' : `Need ${currentWindowSeconds}s`}</span>
 						</span>
-					</label>
+					</div>
 
-					<label class="slider-card">
+					<div class="slider-card">
 						<span class="slider-title">
-							<span class="material-symbols-outlined accent-secondary">work</span>
-							<span>Workload</span>
+							<span class="material-symbols-outlined accent-secondary">monitor_heart</span>
+							<span>RR Samples</span>
 						</span>
-						<input type="range" min="1" max="10" bind:value={workload} />
 						<span class="slider-scale">
-							<span>Light</span>
-							<strong>{workload}</strong>
-							<span>Heavy</span>
+							<span>Current</span>
+							<strong>{currentRrWindow.length}</strong>
+							<span>{windowReady ? 'Ready' : 'Building'}</span>
 						</span>
-					</label>
+					</div>
 
-					<label class="slider-card">
+					<div class="slider-card">
 						<span class="slider-title">
-							<span class="material-symbols-outlined accent-primary">bedtime</span>
-							<span>Sleep</span>
+							<span class="material-symbols-outlined accent-tertiary">neurology</span>
+							<span>Local ML</span>
 						</span>
-						<input type="range" min="1" max="10" bind:value={sleepQuality} />
 						<span class="slider-scale">
-							<span>Restless</span>
-							<strong>{sleepQuality}</strong>
-							<span>Deep</span>
+							<span>Prediction</span>
+							<strong>{windowPrediction.label === 'unknown' ? '--' : windowPrediction.label}</strong>
+							<span>{calmWindowCount} calm / {stressedWindowCount} stressed</span>
 						</span>
-					</label>
+					</div>
 				</div>
 
 				<label class="field">
-					<span class="field-label">Main stressor</span>
+					<span class="field-label">Quick note</span>
 					<input
-						bind:value={stressor}
+						bind:value={windowNote}
 						placeholder="Exams, deadlines, social, sleep..."
 						maxlength="120"
 					/>
 				</label>
 
-				<div class="action-row">
-					<button class="button" onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig}>
-						{isSubmitting ? 'Saving...' : 'Save Check-in'}
+				<div class="window-actions">
+					<button
+						class="button button-label button-calm"
+						onclick={() => saveStressWindow('calm')}
+						disabled={isSubmitting || !hasSupabaseConfig || !windowReady}
+					>
+						{isSubmitting ? 'Saving...' : 'Label Calm'}
 					</button>
+					<button
+						class="button button-label button-stressed"
+						onclick={() => saveStressWindow('stressed')}
+						disabled={isSubmitting || !hasSupabaseConfig || !windowReady}
+					>
+						{isSubmitting ? 'Saving...' : 'Label Stressed'}
+					</button>
+				</div>
+
+				<div class="action-row action-row-wrap">
+					<button class="button button-subtle" type="button" onclick={simulateSpike}>Simulate Window</button>
 				</div>
 
 				{#if !hasSupabaseConfig}
@@ -484,21 +708,22 @@
 					<p class="inline-status">{submitStatus}</p>
 				{/if}
 
-				{#if lastSavedCheckIn}
+				{#if lastSavedWindow}
 					<div class="saved-panel">
-						<p class="saved-title">Last saved check-in</p>
+						<p class="saved-title">Last saved training window</p>
 						<div class="saved-metrics">
-							<span>{lastSavedCheckIn.stress_level.toUpperCase()}</span>
-							<span>Score {lastSavedCheckIn.stress_score}</span>
-							<span>Mood {lastSavedCheckIn.mood}</span>
-							<span>Workload {lastSavedCheckIn.workload}</span>
-							<span>Sleep {lastSavedCheckIn.sleep_quality}</span>
+							<span>{lastSavedWindow.label.toUpperCase()}</span>
+							<span>Avg HR {lastSavedWindow.heart_rate_avg ?? '--'}</span>
+							<span>Max HR {lastSavedWindow.heart_rate_max ?? '--'}</span>
+							<span>RMSSD {lastSavedWindow.rmssd_ms ?? '--'}</span>
+							<span>SDNN {lastSavedWindow.sdnn_ms ?? '--'}</span>
+							<span>RR Count {lastSavedWindow.rr_count ?? '--'}</span>
 						</div>
 						<p class="saved-copy">
-							Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm and RR {lastSavedCheckIn.rr_ms ?? '--'} ms.
+							Saved at {new Date(lastSavedWindow.created_at).toLocaleString()} with RR {lastSavedWindow.rr_ms ?? '--'} ms and lnRMSSD {lastSavedWindow.ln_rmssd ?? '--'}.
 						</p>
-						{#if lastSavedCheckIn.stressor}
-							<p class="saved-copy">Stressor: {lastSavedCheckIn.stressor}</p>
+						{#if lastSavedWindow.note}
+							<p class="saved-copy">Note: {lastSavedWindow.note}</p>
 						{/if}
 					</div>
 				{/if}
@@ -507,7 +732,7 @@
 			<article class="sensor-card kit-panel" id="sensor">
 				<div class="section-heading">
 					<div>
-						<h3>Live Sensor</h3>
+						<h3>Live Polar H9</h3>
 					</div>
 					<div class="live-indicator">
 						<span class:dot-live={isSensorConnected} class="live-dot"></span>
@@ -521,8 +746,27 @@
 						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
 					</div>
 					<div class="metric-card">
-						<p class="metric-label">RR INTERVAL</p>
+						<p class="metric-label">LATEST RR</p>
 						<p class="metric-value secondary">{rrMs ?? '--'} <span>MS</span></p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">RMSSD</p>
+						<p class="metric-value secondary">{currentMetrics.rmssdMs ?? '--'} <span>MS</span></p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">SDNN</p>
+						<p class="metric-value secondary">{currentMetrics.sdnnMs ?? '--'} <span>MS</span></p>
+					</div>
+				</div>
+
+				<div class="metric-pair metric-pair-compact">
+					<div class="metric-card">
+						<p class="metric-label">WINDOW AVG HR</p>
+						<p class="metric-value secondary">{windowHeartRateAvg ?? '--'} <span>BPM</span></p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">WINDOW RR COUNT</p>
+						<p class="metric-value secondary">{currentRrWindow.length} <span>SAMPLES</span></p>
 					</div>
 				</div>
 
@@ -533,18 +777,91 @@
 						disabled={!canUseBluetooth || isConnecting || isSensorConnected}
 					>
 						<span class="material-symbols-outlined">bluetooth</span>
-						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
+						<span>{isConnecting ? 'Connecting...' : 'Connect Polar H9'}</span>
 					</button>
 
 					<div class="inline-buttons">
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
 						</button>
-						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
 					</div>
 				</div>
 
 				<p class="section-copy">{sensorStatus}</p>
+				<p class="section-copy">
+					{savedWindows.length} labeled windows saved. Training set: {calmWindowCount} calm / {stressedWindowCount} stressed.
+				</p>
+
+				<details class="debug-panel">
+					<summary>Debug Panel</summary>
+					<div class="debug-grid">
+						<div class="debug-item">
+							<span class="debug-label">Window Coverage</span>
+							<strong>{windowCoverageSeconds}s / {currentWindowSeconds}s</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Window Ready</span>
+							<strong>{windowReady ? 'yes' : 'no'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Model Ready</span>
+							<strong>{mlReady ? 'yes' : 'no'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Prediction</span>
+							<strong>{windowPrediction.label}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Confidence</span>
+							<strong>{Math.round(windowPrediction.confidence * 100)}%</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Stress Score</span>
+							<strong>{stressScore}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Avg HR</span>
+							<strong>{windowHeartRateAvg ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Max HR</span>
+							<strong>{windowHeartRateMax ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Mean RR</span>
+							<strong>{currentMetrics.meanRrMs ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">RMSSD</span>
+							<strong>{currentMetrics.rmssdMs ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">lnRMSSD</span>
+							<strong>{currentMetrics.lnRmssd ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">SDNN</span>
+							<strong>{currentMetrics.sdnnMs ?? '--'}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">pNN25</span>
+							<strong>{currentMetrics.pnn25 ?? '--'}%</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">pNN50</span>
+							<strong>{currentMetrics.pnn50 ?? '--'}%</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Calm Windows</span>
+							<strong>{calmWindowCount}</strong>
+						</div>
+						<div class="debug-item">
+							<span class="debug-label">Stressed Windows</span>
+							<strong>{stressedWindowCount}</strong>
+						</div>
+					</div>
+					<p class="debug-reason">{windowPrediction.reason}</p>
+				</details>
 
 				{#if !canUseBluetooth}
 					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
@@ -945,6 +1262,7 @@
 	.sensor-card,
 	.helper-card {
 		padding: 1.8rem;
+		min-width: 0;
 	}
 
 	.stress-card {
@@ -1026,6 +1344,8 @@
 
 	.pill-row {
 		margin: 1rem 0 1.2rem;
+		flex-wrap: wrap;
+		gap: 0.55rem;
 	}
 
 	.pill,
@@ -1046,10 +1366,43 @@
 		border: 1px solid rgba(255, 255, 255, 0.16);
 	}
 
+	.pill-level-low,
+	.pill-green {
+		background: rgba(91, 244, 222, 0.18);
+		color: #e8fffa;
+		border-color: rgba(160, 255, 232, 0.24);
+	}
+
+	.pill-level-rising,
+	.pill-yellow,
+	.pill-cognitive-medium {
+		background: rgba(252, 192, 37, 0.18);
+		color: #fff5d7;
+		border-color: rgba(255, 221, 128, 0.24);
+	}
+
+	.pill-level-high,
+	.pill-red,
+	.pill-cognitive-high {
+		background: rgba(251, 81, 81, 0.2);
+		color: #ffe2e2;
+		border-color: rgba(255, 170, 170, 0.24);
+	}
+
+	.pill-cognitive-low {
+		background: rgba(122, 196, 255, 0.16);
+		color: #def3ff;
+		border-color: rgba(181, 225, 255, 0.24);
+	}
+
 	.coach-box {
 		padding: 1rem;
 		border-radius: 1.5rem;
 		background: rgba(0, 90, 80, 0.26);
+	}
+
+	.metrics-box {
+		margin-top: 1rem;
 	}
 
 	.coach-title {
@@ -1145,13 +1498,12 @@
 		background: rgba(255, 255, 255, 0.88);
 	}
 
-	input[type='range'] {
-		width: 100%;
-		accent-color: var(--primary);
-	}
-
 	.action-row {
 		margin-top: 1.2rem;
+	}
+
+	.action-row-wrap {
+		flex-wrap: wrap;
 	}
 
 	.button,
@@ -1225,6 +1577,19 @@
 		box-shadow: none;
 	}
 
+	.button-label {
+		min-width: 0;
+		box-shadow: none;
+	}
+
+	.button-calm {
+		background: linear-gradient(135deg, #0f8d79, #27b29d);
+	}
+
+	.button-stressed {
+		background: linear-gradient(135deg, #c14343, #ef6a6a);
+	}
+
 	.button-ghost-on-dark {
 		background: rgba(255, 255, 255, 0.1);
 		color: #f3fffc;
@@ -1256,17 +1621,73 @@
 		color: var(--primary);
 	}
 
+	.debug-panel {
+		margin-top: 1rem;
+		padding: 1rem;
+		border-radius: 1.4rem;
+		background: rgba(211, 228, 255, 0.38);
+		border: 1px solid rgba(160, 174, 197, 0.24);
+	}
+
+	.debug-panel summary {
+		cursor: pointer;
+		font-weight: 800;
+		color: var(--primary);
+	}
+
+	.debug-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.75rem;
+		margin-top: 0.9rem;
+	}
+
+	.debug-item {
+		display: grid;
+		gap: 0.18rem;
+		padding: 0.75rem 0.85rem;
+		border-radius: 1rem;
+		background: rgba(255, 255, 255, 0.82);
+	}
+
+	.debug-label {
+		font-size: 0.75rem;
+		font-weight: 800;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--on-surface-variant);
+	}
+
+	.debug-reason {
+		margin: 0.9rem 0 0;
+		color: var(--on-surface-variant);
+		line-height: 1.5;
+	}
+
 	.metric-pair,
 	.inline-buttons {
 		gap: 0.9rem;
 	}
 
-	.metric-pair {
+	.window-actions {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.85rem;
 		margin-top: 1.2rem;
 	}
 
+	.metric-pair {
+		margin-top: 1.2rem;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.metric-pair-compact {
+		margin-top: 0.85rem;
+	}
+
 	.metric-card {
-		flex: 1;
+		min-width: 0;
 		background: var(--surface-container);
 	}
 
@@ -1290,6 +1711,16 @@
 		display: grid;
 		gap: 0.85rem;
 		margin-top: 1.2rem;
+	}
+
+	.window-grid .slider-card {
+		min-height: 7.25rem;
+		align-content: start;
+	}
+
+	.stacked-actions .button,
+	.inline-buttons .button {
+		width: 100%;
 	}
 
 	.live-indicator {
@@ -1429,6 +1860,18 @@
 		border-color: rgba(251, 81, 81, 0.48);
 	}
 
+	.recovery-green {
+		box-shadow: 0 16px 34px rgba(0, 90, 80, 0.24);
+	}
+
+	.recovery-yellow {
+		box-shadow: 0 16px 34px rgba(178, 129, 0, 0.24);
+	}
+
+	.recovery-red {
+		box-shadow: 0 16px 34px rgba(166, 36, 36, 0.24);
+	}
+
 	.accent-primary {
 		background: rgba(91, 244, 222, 0.24);
 		color: var(--primary);
@@ -1538,6 +1981,21 @@
 	}
 
 	@media (max-width: 720px) {
+		.app-shell {
+			padding: 0.75rem;
+		}
+
+		.kit-panel {
+			border-radius: 1.45rem;
+		}
+
+		.stress-card,
+		.checkin-card,
+		.sensor-card,
+		.helper-card {
+			padding: 1.1rem;
+		}
+
 		.hero {
 			flex-direction: column;
 			align-items: stretch;
@@ -1551,6 +2009,10 @@
 			grid-template-columns: 1fr;
 		}
 
+		.window-actions {
+			grid-template-columns: 1fr;
+		}
+
 		.metric-pair,
 		.inline-buttons,
 		.section-heading,
@@ -1559,12 +2021,53 @@
 			align-items: stretch;
 		}
 
+		.metric-pair {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+
+		.metric-value {
+			font-size: clamp(1.7rem, 8vw, 2.15rem);
+			word-break: break-word;
+		}
+
+		.metric-label {
+			font-size: 0.75rem;
+			line-height: 1.2;
+		}
+
+		.pill {
+			width: 100%;
+			justify-content: center;
+			text-align: center;
+		}
+
+		.output-panel {
+			font-size: 0.88rem;
+			padding: 0.85rem;
+		}
+
 		.chat-bubble {
 			max-width: 100%;
 		}
 
 		.persona-select {
 			width: 100%;
+		}
+	}
+
+	@media (max-width: 520px) {
+		.metric-pair {
+			grid-template-columns: 1fr;
+		}
+
+		.debug-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.mobile-footer {
+			left: 0.5rem;
+			right: 0.5rem;
+			bottom: 0.5rem;
 		}
 	}
 </style>

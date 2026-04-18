@@ -11,7 +11,16 @@ type HelperRequestBody = {
   sleepQuality?: number;
   heartRate?: number;
   rrMs?: number;
+  rmssdMs?: number;
+  lnRmssd?: number;
+  sdnnMs?: number;
+  baselineHeartRate?: number;
+  baselineLnRmssd?: number;
+  baselineSdnnMs?: number;
   stressLevel?: string;
+  stressScore?: number;
+  recoveryStatus?: string;
+  cognitiveStrainRisk?: string;
   stressor?: string;
 };
 
@@ -89,7 +98,16 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Sleep quality: ${body.sleepQuality ?? 'n/a'}/10`,
     `- Heart rate: ${body.heartRate ?? 'n/a'} bpm`,
     `- RR interval: ${body.rrMs ?? 'n/a'} ms`,
+    `- RMSSD: ${body.rmssdMs ?? 'n/a'} ms`,
+    `- lnRMSSD: ${body.lnRmssd ?? 'n/a'}`,
+    `- SDNN: ${body.sdnnMs ?? 'n/a'} ms`,
+    `- Baseline HR: ${body.baselineHeartRate ?? 'n/a'} bpm`,
+    `- Baseline lnRMSSD: ${body.baselineLnRmssd ?? 'n/a'}`,
+    `- Baseline SDNN: ${body.baselineSdnnMs ?? 'n/a'} ms`,
     `- Stress level: ${body.stressLevel ?? 'n/a'}`,
+    `- Stress score: ${body.stressScore ?? 'n/a'}`,
+    `- Recovery status: ${body.recoveryStatus ?? 'n/a'}`,
+    `- Cognitive strain risk: ${body.cognitiveStrainRisk ?? 'n/a'}`,
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`,
     '',
     'Recent conversation:',
