@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
+	import type { Session, User } from '@supabase/supabase-js';
 
 	type SavedCheckIn = {
 		id: string;
@@ -16,6 +18,15 @@
 		rr_ms: number | null;
 		stressor: string | null;
 	};
+
+	type SupabaseLikeError = {
+		message?: string;
+		details?: string;
+		hint?: string;
+		code?: string;
+	};
+
+	type OAuthProvider = 'google' | 'github';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -44,6 +55,11 @@
 	let isSubmitting = $state(false);
 	let submitStatus = $state('');
 	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
+	let currentSession = $state<Session | null>(null);
+	let currentUser = $state<User | null>(null);
+	let authStatus = $state('');
+	let isSigningIn = $state<OAuthProvider | null>(null);
+	let isSigningOut = $state(false);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
@@ -80,6 +96,104 @@
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
 	}
 
+	onMount(() => {
+		if (!supabase) {
+			return;
+		}
+
+		void supabase.auth.getSession().then(({ data, error }) => {
+			if (error) {
+				authStatus = describeError(error, 'Failed to restore session.');
+				return;
+			}
+
+			currentSession = data.session;
+			currentUser = data.session?.user ?? null;
+		});
+
+		const {
+			data: { subscription }
+		} = supabase.auth.onAuthStateChange((_event, session) => {
+			currentSession = session;
+			currentUser = session?.user ?? null;
+		});
+
+		return () => {
+			subscription.unsubscribe();
+		};
+	});
+
+	function describeError(error: unknown, fallback: string): string {
+		if (error instanceof Error && error.message) {
+			return error.message;
+		}
+
+		if (error && typeof error === 'object') {
+			const candidate = error as SupabaseLikeError;
+			const parts = [candidate.message, candidate.details, candidate.hint].filter(Boolean);
+			if (parts.length > 0) {
+				return parts.join(' ');
+			}
+
+			if (candidate.code) {
+				return `${fallback} (${candidate.code})`;
+			}
+		}
+
+		return fallback;
+	}
+
+	async function signInWithProvider(provider: OAuthProvider) {
+		if (!supabase || !browser || isSigningIn) {
+			return;
+		}
+
+		isSigningIn = provider;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signInWithOAuth({
+				provider,
+				options: {
+					redirectTo: `${window.location.origin}/app`
+				}
+			});
+
+			if (error) {
+				throw error;
+			}
+		} catch (error) {
+			authStatus = describeError(error, `Failed to sign in with ${provider}.`);
+		} finally {
+			isSigningIn = null;
+		}
+	}
+
+	async function signOut() {
+		if (!supabase || isSigningOut) {
+			return;
+		}
+
+		isSigningOut = true;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signOut();
+			if (error) {
+				throw error;
+			}
+
+			currentSession = null;
+			currentUser = null;
+			submitStatus = '';
+			lastSavedCheckIn = null;
+		} catch (error) {
+			authStatus = describeError(error, 'Failed to sign out.');
+		} finally {
+			isSigningOut = false;
+		}
+	}
+
 	async function connectSensor() {
 		if (!canUseBluetooth || isConnecting) {
 			return;
@@ -97,7 +211,7 @@
 			isSensorConnected = true;
 			sensorStatus = 'Connected to heart rate monitor';
 		} catch (error) {
-			sensorStatus = error instanceof Error ? error.message : 'Could not connect to sensor';
+			sensorStatus = describeError(error, 'Could not connect to sensor');
 		} finally {
 			isConnecting = false;
 		}
@@ -129,6 +243,11 @@
 
 		if (!supabase) {
 			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
+			return;
+		}
+
+		if (!currentUser) {
+			submitStatus = 'Sign in first to save a check-in.';
 			return;
 		}
 
@@ -178,7 +297,7 @@
 
 			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
 		} catch (error) {
-			submitStatus = error instanceof Error ? error.message : 'Failed to save check-in';
+			submitStatus = describeError(error, 'Failed to save check-in');
 		} finally {
 			isSubmitting = false;
 		}
@@ -220,7 +339,7 @@
 			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			geminiStatus = payload?.warning ?? 'AI intervention generated.';
 		} catch (error) {
-			geminiStatus = error instanceof Error ? error.message : 'Failed to generate plan.';
+			geminiStatus = describeError(error, 'Failed to generate plan.');
 		} finally {
 			isGeneratingPlan = false;
 		}
@@ -283,7 +402,7 @@
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			helperStatus = payload?.warning ?? 'Kelp replied.';
 		} catch (error) {
-			helperStatus = error instanceof Error ? error.message : 'Failed to ask helper.';
+			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
 			isAskingHelper = false;
 		}
@@ -298,6 +417,36 @@
 	<title>Sanctuary | Your Mental Space</title>
 </svelte:head>
 
+{#if !currentUser}
+	<main class="auth-shell">
+		<section class="auth-hero">
+			<div class="auth-panel kit-panel">
+				<p class="brand-kicker">Sanctuary</p>
+				<h1>Sign in to enter your calm dashboard.</h1>
+				<p class="auth-lead">
+					Use the OAuth setup already connected to Supabase to open your personal space.
+				</p>
+
+				<div class="auth-actions">
+					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
+					</button>
+					<button class="button button-subtle" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+						{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
+					</button>
+				</div>
+
+				{#if !hasSupabaseConfig}
+					<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env` first.</p>
+				{/if}
+
+				{#if authStatus}
+					<p class="inline-status">{authStatus}</p>
+				{/if}
+			</div>
+		</section>
+	</main>
+{:else}
 <main class="app-shell">
 	<header class="mobile-topbar kit-panel">
 		<div>
@@ -318,7 +467,7 @@
 				<div class="avatar">A</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">Ready for your check-in?</p>
+					<p class="profile-copy">{currentUser.email ?? 'Ready for your check-in?'}</p>
 				</div>
 			</div>
 		</div>
@@ -345,6 +494,9 @@
 		<div class="sidebar-cta">
 			<button class="button button-tertiary" type="button" onclick={generateGeminiPlan}>
 				Start Daily Goal
+			</button>
+			<button class="button button-subtle signout-button" type="button" onclick={signOut} disabled={isSigningOut}>
+				{isSigningOut ? 'Signing out...' : 'Sign out'}
 			</button>
 		</div>
 	</aside>
@@ -666,6 +818,7 @@
 		</a>
 	</footer>
 </main>
+{/if}
 
 <style>
 	:global(:root) {
@@ -734,6 +887,43 @@
 		gap: 1.5rem;
 		min-height: 100vh;
 		padding: 1.5rem;
+	}
+
+	.auth-shell {
+		min-height: 100vh;
+		display: grid;
+		place-items: center;
+		padding: 1.5rem;
+	}
+
+	.auth-hero {
+		width: min(100%, 58rem);
+	}
+
+	.auth-panel {
+		padding: 2rem;
+	}
+
+	.auth-panel h1 {
+		margin: 0.35rem 0 0;
+		font-size: clamp(2.2rem, 5vw, 4rem);
+		line-height: 0.96;
+		color: var(--primary);
+	}
+
+	.auth-lead {
+		margin: 0.9rem 0 0;
+		max-width: 36rem;
+		font-size: 1.05rem;
+		line-height: 1.6;
+		color: var(--on-surface-variant);
+	}
+
+	.auth-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.85rem;
+		margin-top: 1.5rem;
 	}
 
 	.kit-panel {
@@ -865,6 +1055,12 @@
 
 	.sidebar-cta {
 		margin-top: auto;
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.signout-button {
+		width: 100%;
 	}
 
 	.main-column {
