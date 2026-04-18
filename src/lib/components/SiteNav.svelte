@@ -21,7 +21,7 @@
 	let isSigningOut = $state(false);
 	let themeMode = $state<ThemeMode>('light');
 
-	const isDashboard = $derived(page.url.pathname.startsWith('/app'));
+	const isDashboard = $derived(page.url.pathname === '/app');
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 	const primaryActionLabel = $derived(currentUser ? (isDashboard ? 'Home' : 'Dashboard') : 'Login');

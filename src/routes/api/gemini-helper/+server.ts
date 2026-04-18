@@ -15,6 +15,21 @@ type HelperRequestBody = {
   stressor?: string;
 };
 
+function shouldUseFallback(result: { ok: false; status: number; message: string }): boolean {
+  const normalized = result.message.toLowerCase();
+
+  return (
+    result.status === 429 ||
+    result.status === 500 ||
+    result.status === 503 ||
+    normalized.includes('high demand') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('rate-limited') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('temporarily unavailable')
+  );
+}
+
 function fallbackHelperReply(body: HelperRequestBody, question: string): string {
   const persona = body.persona ?? 'calm-coach';
   const opener =
@@ -107,10 +122,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     model
   });
 
-  if (!result.ok && result.status === 429) {
+  if (!result.ok && shouldUseFallback(result)) {
     return json({
       reply: fallbackHelperReply(body, question),
-      warning: 'Gemini rate-limited (429). Showing local fallback coach response.',
+      warning: `Gemini is temporarily unavailable. Showing local fallback coach response instead. (${result.model})`,
       source: 'fallback'
     });
   }

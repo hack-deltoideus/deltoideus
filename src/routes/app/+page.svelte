@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
-	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -21,59 +21,6 @@
 		stressor: string | null;
 	};
 
-	type DiagnosticSample = {
-		recorded_at: string;
-		elapsed_ms: number;
-		heart_rate: number;
-		rr_ms: number | null;
-		hrv_ms: number | null;
-	};
-
-	type SavedDiagnosticSession = {
-		id: string;
-		created_at: string;
-		started_at: string;
-		ended_at: string | null;
-		duration_seconds: number | null;
-		avg_heart_rate: number | null;
-		avg_rr_ms: number | null;
-		avg_hrv_ms: number | null;
-		last_hrv_ms: number | null;
-		max_heart_rate: number | null;
-		sample_count: number;
-		device_name: string | null;
-		capture_type: string | null;
-		raw_data_path: string | null;
-		summary_payload: {
-			sessionId: string;
-			userId: string;
-			deviceInfo: {
-				name: string;
-			} | null;
-			captureType: string;
-			startedAt: string;
-			endedAt: string;
-			durationSeconds: number;
-			sampleCount: number;
-			averageHeartRate: number | null;
-			averageRrMs: number | null;
-			averageHrvMs: number | null;
-			lastHrvMs: number | null;
-			maxHeartRate: number | null;
-			segmentLengthSeconds: number;
-			segments: Array<{
-				index: number;
-				startedAt: string;
-				endedAt: string;
-				durationSeconds: number;
-				sampleCount: number;
-				averageHeartRate: number | null;
-				averageRrMs: number | null;
-				averageHrvMs: number | null;
-			}>;
-		} | null;
-	};
-
 	type SupabaseLikeError = {
 		message?: string;
 		details?: string;
@@ -81,7 +28,7 @@
 		code?: string;
 	};
 
-type OAuthProvider = 'google';
+	type OAuthProvider = 'google';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -90,7 +37,6 @@ type OAuthProvider = 'google';
 
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
-	let hrvMs = $state<number | undefined>(undefined);
 	let baselineHeartRate = $state(65);
 
 	const stressResult = $derived(
@@ -115,29 +61,10 @@ type OAuthProvider = 'google';
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let isSigningOut = $state(false);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
 	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
-	let helperReply = $state('');
-	let helperStatus = $state('');
-	let isAskingHelper = $state(false);
-	let helperSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
-	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
-
-	let isConnecting = $state(false);
-	let isSensorConnected = $state(false);
-	let canUseBluetooth = $state(false);
-	let sensorStatus = $state('Disconnected');
-	let sessionStartedAt = $state<string | null>(null);
-	let sessionDeviceName = $state<string | null>(null);
-	let sessionSamples = $state<DiagnosticSample[]>([]);
-	let lastSavedDiagnosticSession = $state<SavedDiagnosticSession | null>(null);
-
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
 
 	const levelClass = $derived(`level-${stressLevel}`);
 	const levelLabel = $derived(
@@ -152,12 +79,7 @@ type OAuthProvider = 'google';
 	);
 	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
 	const displayName = $derived(getDisplayName(currentUser));
-	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 	const profileCopy = $derived(currentUser?.email ?? 'Ready for your check-in?');
-
-	if (browser) {
-		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
-	}
 
 	onMount(() => {
 		if (!supabase) {
@@ -235,78 +157,6 @@ type OAuthProvider = 'google';
 		return 'Friend';
 	}
 
-	function averageOf(values: number[]): number | null {
-		if (values.length === 0) {
-			return null;
-		}
-
-		return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
-	}
-
-	function chooseSegmentLengthSeconds(durationSeconds: number): number {
-		return durationSeconds < 20 * 60 ? 60 : 300;
-	}
-
-	function buildSessionSegments(
-		samples: DiagnosticSample[],
-		startedAt: string,
-		durationSeconds: number
-	): Array<{
-		index: number;
-		startedAt: string;
-		endedAt: string;
-		durationSeconds: number;
-		sampleCount: number;
-		averageHeartRate: number | null;
-		averageRrMs: number | null;
-		averageHrvMs: number | null;
-	}> {
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const segmentBuckets = new Map<number, DiagnosticSample[]>();
-
-		for (const sample of samples) {
-			const segmentIndex = Math.floor(sample.elapsed_ms / (segmentLengthSeconds * 1000));
-			const existing = segmentBuckets.get(segmentIndex) ?? [];
-			existing.push(sample);
-			segmentBuckets.set(segmentIndex, existing);
-		}
-
-		return Array.from(segmentBuckets.entries())
-			.sort(([left], [right]) => left - right)
-			.map(([segmentIndex, bucket]) => {
-				const segmentStartedMs = new Date(startedAt).getTime() + segmentIndex * segmentLengthSeconds * 1000;
-				const heartRates = bucket.map((sample) => sample.heart_rate);
-				const rrValues = bucket
-					.map((sample) => sample.rr_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const hrvValues = bucket
-					.map((sample) => sample.hrv_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const endedAtMs = bucket.at(-1)
-					? new Date(startedAt).getTime() + (bucket.at(-1)?.elapsed_ms ?? 0)
-					: segmentStartedMs;
-
-				return {
-					index: segmentIndex + 1,
-					startedAt: new Date(segmentStartedMs).toISOString(),
-					endedAt: new Date(endedAtMs).toISOString(),
-					durationSeconds: Math.max(1, Math.round((endedAtMs - segmentStartedMs) / 1000)),
-					sampleCount: bucket.length,
-					averageHeartRate: averageOf(heartRates),
-					averageRrMs: averageOf(rrValues),
-					averageHrvMs: averageOf(hrvValues)
-				};
-			});
-	}
-
-	function elapsedSecondsSince(startedAt: string | null): number | null {
-		if (!startedAt) {
-			return null;
-		}
-
-		return Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
-	}
-
 	async function signInWithProvider(provider: OAuthProvider) {
 		if (!supabase || !browser || isSigningIn) {
 			return;
@@ -333,250 +183,26 @@ type OAuthProvider = 'google';
 		}
 	}
 
-	async function signOut() {
-		if (!supabase || isSigningOut) {
-			return;
-		}
+	async function persistCheckIn(options?: { silent?: boolean }): Promise<boolean> {
+		const silent = options?.silent ?? false;
 
-		isSigningOut = true;
-		authStatus = '';
-
-		try {
-			const { error } = await supabase.auth.signOut();
-			if (error) {
-				throw error;
-			}
-
-			currentSession = null;
-			currentUser = null;
+		if (!silent) {
 			submitStatus = '';
 			lastSavedCheckIn = null;
-		} catch (error) {
-			authStatus = describeError(error, 'Failed to sign out.');
-		} finally {
-			isSigningOut = false;
 		}
-	}
-
-	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
-
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
-
-		try {
-			const startedAt = new Date().toISOString();
-			sessionStartedAt = startedAt;
-			sessionSamples = [];
-			lastSavedDiagnosticSession = null;
-
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-				hrvMs = reading.hrvMs;
-
-				const recordedAt = new Date().toISOString();
-				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
-				sessionSamples = [
-					...sessionSamples,
-					{
-						recorded_at: recordedAt,
-						elapsed_ms: elapsedMs,
-						heart_rate: reading.heartRate,
-						rr_ms: reading.rrMs ?? null,
-						hrv_ms: reading.hrvMs ?? null
-					}
-				].slice(-600);
-			});
-
-			sessionDeviceName = 'Polar H9';
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sessionStartedAt = null;
-			sessionSamples = [];
-			sensorStatus = describeError(error, 'Could not connect to sensor');
-		} finally {
-			isConnecting = false;
-		}
-	}
-
-	async function disconnectSensor() {
-		if (!stopSensor) {
-			return;
-		}
-
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
 
 		if (!supabase) {
-			sensorStatus = 'Disconnected. Supabase is not configured, so diagnostics were not saved.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
+			if (!silent) {
+				submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
+			}
+			return false;
 		}
 
 		if (!currentUser) {
-			sensorStatus = 'Disconnected. Sign in to save diagnostics.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		const endedAt = new Date().toISOString();
-		const durationSeconds = sessionStartedAt
-			? Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(sessionStartedAt).getTime()) / 1000))
-			: 0;
-		const heartRates = sessionSamples.map((sample) => sample.heart_rate);
-		const rrValues = sessionSamples
-			.map((sample) => sample.rr_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const hrvValues = sessionSamples
-			.map((sample) => sample.hrv_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const sessionId = crypto.randomUUID();
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const summaryPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			averageHeartRate: averageOf(heartRates),
-			averageRrMs: averageOf(rrValues),
-			averageHrvMs: averageOf(hrvValues),
-			lastHrvMs: hrvValues.at(-1) ?? null,
-			maxHeartRate: heartRates.length > 0 ? Math.max(...heartRates) : null,
-			segmentLengthSeconds,
-			segments: buildSessionSegments(sessionSamples, sessionStartedAt ?? endedAt, durationSeconds)
-		};
-		const rawPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			readings: sessionSamples
-		};
-		const rawDataPath = `${currentUser.id}/${sessionId}.json`;
-
-		try {
-			const { error: uploadError } = await supabase.storage
-				.from('diagnostic-raw')
-				.upload(rawDataPath, JSON.stringify(rawPayload, null, 2), {
-					contentType: 'application/json',
-					upsert: true
-				});
-
-			if (uploadError) {
-				throw uploadError;
+			if (!silent) {
+				submitStatus = 'Sign in first to save a check-in.';
 			}
-
-			const { data, error } = await supabase
-				.from('sensor_sessions')
-				.insert({
-					id: sessionId,
-					user_id: currentUser.id,
-					started_at: sessionStartedAt ?? endedAt,
-					ended_at: endedAt,
-					duration_seconds: durationSeconds,
-					avg_heart_rate: summaryPayload.averageHeartRate,
-					avg_rr_ms: summaryPayload.averageRrMs,
-					avg_hrv_ms: summaryPayload.averageHrvMs,
-					last_hrv_ms: summaryPayload.lastHrvMs,
-					max_heart_rate: summaryPayload.maxHeartRate,
-					sample_count: summaryPayload.sampleCount,
-					device_name: summaryPayload.deviceInfo?.name ?? null,
-					capture_type: summaryPayload.captureType,
-					raw_data_path: rawDataPath,
-					summary_payload: summaryPayload,
-					session_summary: {
-						startedAt: summaryPayload.startedAt,
-						endedAt: summaryPayload.endedAt,
-						durationSeconds: summaryPayload.durationSeconds,
-						sampleCount: summaryPayload.sampleCount,
-						averageHeartRate: summaryPayload.averageHeartRate,
-						averageRrMs: summaryPayload.averageRrMs,
-						averageHrvMs: summaryPayload.averageHrvMs,
-						lastHrvMs: summaryPayload.lastHrvMs,
-						maxHeartRate: summaryPayload.maxHeartRate,
-						segmentLengthSeconds: summaryPayload.segmentLengthSeconds
-					}
-				})
-				.select(
-					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, device_name, capture_type, raw_data_path, summary_payload'
-				)
-				.single();
-
-			if (error) {
-				throw error;
-			}
-
-			lastSavedDiagnosticSession = data as SavedDiagnosticSession;
-			sensorStatus = `Disconnected. Diagnostic session saved (${data.id.slice(0, 8)}...).`;
-		} catch (error) {
-			sensorStatus = describeError(error, 'Disconnected, but failed to save diagnostics.');
-		} finally {
-			sessionStartedAt = null;
-			sessionSamples = [];
-		}
-	}
-
-	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
-		const randomHrv = 18 + Math.floor(Math.random() * 28);
-
-		heartRate = randomHr;
-		rrMs = randomRr;
-		hrvMs = randomHrv;
-
-		if (sessionStartedAt) {
-			const recordedAt = new Date().toISOString();
-			const elapsedMs = Math.max(
-				0,
-				new Date(recordedAt).getTime() - new Date(sessionStartedAt).getTime()
-			);
-			sessionSamples = [
-				...sessionSamples,
-				{
-					recorded_at: recordedAt,
-					elapsed_ms: elapsedMs,
-					heart_rate: randomHr,
-					rr_ms: randomRr,
-					hrv_ms: randomHrv
-				}
-			].slice(-600);
-		}
-
-		sensorStatus = 'Simulated stress signal loaded';
-	}
-
-	async function submitCheckIn() {
-		submitStatus = '';
-		lastSavedCheckIn = null;
-
-		if (!supabase) {
-			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
-			return;
-		}
-
-		if (!currentUser) {
-			submitStatus = 'Sign in first to save a check-in.';
-			return;
+			return false;
 		}
 
 		isSubmitting = true;
@@ -591,8 +217,6 @@ type OAuthProvider = 'google';
 				stress_level: stressLevel,
 				heart_rate: heartRate,
 				rr_ms: rrMs,
-				hrv_ms: hrvMs,
-				session_elapsed_seconds: elapsedSecondsSince(sessionStartedAt),
 				stressor: stressor.trim() || null
 			};
 
@@ -628,8 +252,12 @@ type OAuthProvider = 'google';
 			}
 
 			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
+			return true;
 		} catch (error) {
-			submitStatus = describeError(error, 'Failed to save check-in');
+			if (!silent) {
+				submitStatus = describeError(error, 'Failed to save check-in');
+			}
+			return false;
 		} finally {
 			isSubmitting = false;
 		}
@@ -641,6 +269,8 @@ type OAuthProvider = 'google';
 		geminiSource = '';
 
 		try {
+			const didSaveCheckIn = await persistCheckIn({ silent: true });
+
 			const response = await fetch('/api/gemini-intervention', {
 				method: 'POST',
 				headers: {
@@ -669,187 +299,71 @@ type OAuthProvider = 'google';
 			}
 
 			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			geminiStatus = payload?.warning ?? 'AI intervention generated.';
+			geminiStatus =
+				payload?.warning ??
+				(didSaveCheckIn
+					? 'AI intervention generated and check-in saved.'
+					: 'AI intervention generated.');
 		} catch (error) {
 			geminiStatus = describeError(error, 'Failed to generate plan.');
 		} finally {
 			isGeneratingPlan = false;
 		}
 	}
-
-	async function askGeminiHelper() {
-		helperStatus = '';
-		helperReply = '';
-		helperSource = '';
-
-		const question = helperQuestion.trim();
-		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
-			return;
-		}
-
-		isAskingHelper = true;
-
-		try {
-			const nextHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
-				...helperHistory,
-				{ role: 'user', text: question }
-			];
-
-			const response = await fetch('/api/gemini-helper', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					question,
-					persona: helperPersona,
-					history: helperHistory,
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressor
-				})
-			});
-
-			const payload = await response.json();
-			if (!response.ok) {
-				throw new Error(payload?.error ?? 'Failed to get helper response');
-			}
-
-			helperReply = payload.reply ?? '';
-			if (!helperReply) {
-				throw new Error('Kelp returned an empty response.');
-			}
-
-			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
-				...nextHistory,
-				{ role: 'assistant', text: helperReply }
-			];
-			helperHistory = updatedHistory.slice(-8);
-
-			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
-		} catch (error) {
-			helperStatus = describeError(error, 'Failed to ask helper.');
-		} finally {
-			isAskingHelper = false;
-		}
-	}
-
-	function applyQuickPrompt(prompt: string) {
-		helperQuestion = prompt;
-	}
 </script>
 
 <svelte:head>
-	<title>Sanctuary | Your Mental Space</title>
+	<title>Sanctuary | Dashboard</title>
 </svelte:head>
 
 {#if !currentUser}
 	<SiteNav />
 	<main class="auth-shell">
-		<section class="auth-hero">
-			<div class="auth-panel kit-panel">
-				<p class="brand-kicker">Sanctuary</p>
-				<h1>Sign in to enter your calm dashboard.</h1>
+		<section class="auth-panel">
+			<p class="eyebrow">Sanctuary</p>
+			<h1>Sign in to open your dashboard.</h1>
+			<p class="hero-copy">
+				Check in, read your stress score, and generate a grounded next-step plan without mixing it with the live sensor screen.
+			</p>
 
-				<div class="auth-actions">
-					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
-						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
-					</button>
-				</div>
-
-				{#if !hasSupabaseConfig}
-					<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env` first.</p>
-				{/if}
-
-				{#if authStatus}
-					<p class="inline-status">{authStatus}</p>
-				{/if}
+			<div class="auth-actions">
+				<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+					{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
+				</button>
 			</div>
+
+			{#if !hasSupabaseConfig}
+				<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env` first.</p>
+			{/if}
+
+			{#if authStatus}
+				<p class="inline-status">{authStatus}</p>
+			{/if}
 		</section>
 	</main>
 {:else}
-<SiteNav />
-<main class="app-shell">
-	<header class="mobile-topbar kit-panel">
-		<div>
-			<p class="brand-kicker">Sanctuary</p>
-			<p class="brand-subtitle">Mental space</p>
-		</div>
-	</header>
-
-	<aside class="sidebar kit-panel">
-		<div class="sidebar-block">
-			<div class="sidebar-head">
-				<p class="brand-kicker">Sanctuary</p>
-			</div>
-			<h2 class="sidebar-title">Your calm command center</h2>
-
-			<div class="profile-card">
-				<div class="avatar">{avatarLetter}</div>
-				<div>
-					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{displayName} · {profileCopy}</p>
-				</div>
-			</div>
-		</div>
-
-		<nav class="nav-stack" aria-label="Primary">
-			<a class="nav-item is-active" href="#dashboard">
-				<span class="material-symbols-outlined">dashboard</span>
-				<span>Dashboard</span>
-			</a>
-			<a class="nav-item" href="#checkin">
-				<span class="material-symbols-outlined">edit_note</span>
-				<span>Check-in</span>
-			</a>
-			<a class="nav-item" href="#kelp">
-				<span class="material-symbols-outlined">psychology</span>
-				<span>AI Coach</span>
-			</a>
-			<a class="nav-item" href="#sensor">
-				<span class="material-symbols-outlined">history</span>
-				<span>History</span>
-			</a>
-		</nav>
-
-		<div class="sidebar-cta">
-			<button class="button button-tertiary" type="button" onclick={generateGeminiPlan}>
-				Start Daily Goal
-			</button>
-			<button class="button button-subtle signout-button" type="button" onclick={signOut} disabled={isSigningOut}>
-				{isSigningOut ? 'Signing out...' : 'Sign out'}
-			</button>
-		</div>
-	</aside>
-
-	<div class="main-column">
-		<section class="hero" id="dashboard">
+	<SiteNav />
+	<main class="page-shell">
+		<section class="hero">
 			<div>
+				<p class="eyebrow">Dashboard</p>
 				<h1>Welcome back, {displayName}</h1>
-				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
+				<p class="hero-copy">Your check-in and action plan live here. Sensor streaming and saved diagnostics now have their own page.</p>
 			</div>
 
-			<div class="hero-streak kit-panel">
-				<div class="hero-streak-icon">
-					<span class="material-symbols-outlined streak-icon">celebration</span>
-				</div>
-				<div>
-					<p class="hero-streak-label">Daily Streak</p>
-					<p class="hero-streak-value">{streakDays} DAYS</p>
-				</div>
+			<div class="hero-card">
+				<p class="hero-card-label">Daily Streak</p>
+				<p class="hero-card-value">{streakDays} DAYS</p>
+				<p class="hero-card-copy">{profileCopy}</p>
 			</div>
 		</section>
 
-		<section class="kit-grid">
-			<article class="stress-card kit-panel {levelClass}">
+		<AppSectionNav />
+
+		<section class="grid">
+			<article class="stress-card {levelClass}">
 				<div class="card-topline">
-					<p class="meta-label">Stress Detection</p>
+					<p class="eyebrow">Stress Detection</p>
 					<span class="material-symbols-outlined">waves</span>
 				</div>
 
@@ -859,26 +373,27 @@ type OAuthProvider = 'google';
 				</div>
 
 				<div class="pill-row">
-					<p class="pill pill-primary">Level: {levelLabel}</p>
+					<p class="pill">Level: {levelLabel}</p>
+					<p class="pill pill-secondary">{levelDescriptor}</p>
 				</div>
 
 				<div class="coach-box">
 					<p class="coach-title">Coach Suggestion</p>
 					<p class="coach-copy">{intervention}</p>
-					<p class="coach-caption">{levelDescriptor}</p>
 				</div>
 
-				<div class="status-group">
-					{#if geminiSource}
-						<p class="source-badge {geminiSource === 'fallback' ? 'fallback' : 'live'}">
-							{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-						</p>
-					{/if}
-
-					<button class="button button-ghost-on-dark" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
+				<div class="action-row">
+					<button class="button button-ghost" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
 						{isGeneratingPlan ? 'Generating AI Plan...' : 'Generate Gemini Plan'}
 					</button>
+					<a class="button button-subtle" href="/app/sensor">Open Live Data</a>
 				</div>
+
+				{#if geminiSource}
+					<p class="source-badge {geminiSource === 'fallback' ? 'fallback' : 'live'}">
+						{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+					</p>
+				{/if}
 
 				{#if geminiStatus}
 					<p class="inline-status on-dark">{geminiStatus}</p>
@@ -889,22 +404,20 @@ type OAuthProvider = 'google';
 				{/if}
 			</article>
 
-			<article class="checkin-card kit-panel" id="checkin">
+			<article class="checkin-card">
 				<div class="section-heading">
 					<div>
-						<h2>Daily Check-in</h2>
+						<p class="eyebrow">Daily Check-in</p>
+						<h2>Capture how today feels</h2>
 					</div>
-					<div class="badge-icon accent-primary">
-						<span class="material-symbols-outlined filled-icon">favorite</span>
+					<div class="badge-icon">
+						<span class="material-symbols-outlined">favorite</span>
 					</div>
 				</div>
 
 				<div class="slider-grid">
 					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-tertiary">sentiment_satisfied</span>
-							<span>Mood</span>
-						</span>
+						<span class="slider-title">Mood</span>
 						<input type="range" min="1" max="10" bind:value={mood} />
 						<span class="slider-scale">
 							<span>Gloomy</span>
@@ -914,10 +427,7 @@ type OAuthProvider = 'google';
 					</label>
 
 					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-secondary">work</span>
-							<span>Workload</span>
-						</span>
+						<span class="slider-title">Workload</span>
 						<input type="range" min="1" max="10" bind:value={workload} />
 						<span class="slider-scale">
 							<span>Light</span>
@@ -927,10 +437,7 @@ type OAuthProvider = 'google';
 					</label>
 
 					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-primary">bedtime</span>
-							<span>Sleep</span>
-						</span>
+						<span class="slider-title">Sleep</span>
 						<input type="range" min="1" max="10" bind:value={sleepQuality} />
 						<span class="slider-scale">
 							<span>Restless</span>
@@ -942,18 +449,12 @@ type OAuthProvider = 'google';
 
 				<label class="field">
 					<span class="field-label">Main stressor</span>
-					<input
-						bind:value={stressor}
-						placeholder="Exams, deadlines, social, sleep..."
-						maxlength="120"
-					/>
+					<input bind:value={stressor} placeholder="Exams, deadlines, social, sleep..." maxlength="120" />
 				</label>
 
-				<div class="action-row">
-					<button class="button" onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig}>
-						{isSubmitting ? 'Saving...' : 'Save Check-in'}
-					</button>
-				</div>
+				<p class="inline-hint">
+					Your stress score updates live here. Generating an AI plan also saves this check-in automatically.
+				</p>
 
 				{#if !hasSupabaseConfig}
 					<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env`.</p>
@@ -982,289 +483,53 @@ type OAuthProvider = 'google';
 					</div>
 				{/if}
 			</article>
-
-			<article class="sensor-card kit-panel" id="sensor">
-				<div class="section-heading">
-					<div>
-						<h3>Live Sensor</h3>
-					</div>
-					<div class="live-indicator">
-						<span class:dot-live={isSensorConnected} class="live-dot"></span>
-						<span>{isSensorConnected ? 'Live' : 'Standby'}</span>
-					</div>
-				</div>
-
-				<div class="metric-pair">
-					<div class="metric-card">
-						<p class="metric-label">HEART RATE</p>
-						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">RR INTERVAL</p>
-						<p class="metric-value secondary">{rrMs ?? '--'} <span>MS</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">HRV</p>
-						<p class="metric-value secondary">{hrvMs ?? '--'} <span>MS</span></p>
-					</div>
-				</div>
-
-				<div class="stacked-actions">
-					<button
-						class="button button-outline"
-						onclick={connectSensor}
-						disabled={!canUseBluetooth || isConnecting || isSensorConnected}
-					>
-						<span class="material-symbols-outlined">bluetooth</span>
-						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
-					</button>
-
-					<div class="inline-buttons">
-						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
-							Disconnect
-						</button>
-						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
-					</div>
-				</div>
-
-				<p class="section-copy">{sensorStatus}</p>
-
-				{#if lastSavedDiagnosticSession}
-					<div class="saved-panel">
-						<p class="saved-title">Last diagnostic session</p>
-						<div class="saved-metrics">
-							<span>{lastSavedDiagnosticSession.capture_type ?? 'polar_h9_hr_hrv'}</span>
-							<span>{lastSavedDiagnosticSession.sample_count} samples</span>
-							<span>{lastSavedDiagnosticSession.duration_seconds ?? 0}s</span>
-							<span>Avg HR {lastSavedDiagnosticSession.avg_heart_rate ?? '--'}</span>
-							<span>Avg HRV {lastSavedDiagnosticSession.avg_hrv_ms ?? '--'}</span>
-						</div>
-						<p class="saved-copy">
-							Started {new Date(lastSavedDiagnosticSession.started_at).toLocaleString()} on {lastSavedDiagnosticSession.device_name ?? 'Polar H9'}.
-						</p>
-						<p class="saved-copy">
-							Summary JSON has {lastSavedDiagnosticSession.summary_payload?.segments.length ?? 0} segments and raw readings are stored at {lastSavedDiagnosticSession.raw_data_path ?? 'no path'}.
-						</p>
-					</div>
-				{/if}
-
-				{#if !canUseBluetooth}
-					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
-				{/if}
-			</article>
-
-			<article class="helper-card kit-panel" id="kelp">
-				<div class="section-heading">
-					<div class="helper-heading">
-						<div class="badge-icon accent-tertiary">
-							<span class="material-symbols-outlined">smart_toy</span>
-						</div>
-						<div>
-							<h3>Ask Kelp</h3>
-							<p class="helper-subtitle">Your AI Resilience Coach</p>
-						</div>
-					</div>
-
-					<label class="persona-select">
-						<span class="sr-only">Personality</span>
-						<select bind:value={helperPersona}>
-							<option value="calm-coach">Zen Master</option>
-							<option value="tough-love">Strict Trainer</option>
-							<option value="study-planner">Supportive Friend</option>
-						</select>
-					</label>
-				</div>
-
-				<div class="chat-shell">
-					{#if helperHistory.length > 0}
-						{#each helperHistory as msg}
-							<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
-								<p>{msg.text}</p>
-							</div>
-						{/each}
-					{:else}
-						<div class="chat-bubble">
-							<p class="chat-author">Kelp</p>
-							<p>
-								Hello {displayName}! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
-							</p>
-						</div>
-					{/if}
-
-					{#if helperReply}
-						<div class="chat-bubble">
-							<p class="chat-author">Latest Reply</p>
-							<p>{helperReply}</p>
-						</div>
-					{/if}
-				</div>
-
-				<div class="prompt-row">
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Help me focus')}
-					>
-						&quot;Help me focus&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Log a victory')}
-					>
-						&quot;Log a victory&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Quick breathwork')}
-					>
-						&quot;Quick breathwork&quot;
-					</button>
-				</div>
-
-				<div class="message-row">
-					<input
-						class="message-input"
-						bind:value={helperQuestion}
-						placeholder="Type a message to Kelp..."
-						maxlength="700"
-					/>
-					<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-						<span class="material-symbols-outlined">send</span>
-					</button>
-				</div>
-
-				{#if helperSource}
-					<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-					</p>
-				{/if}
-
-				{#if helperStatus}
-					<p class="inline-status">{helperStatus}</p>
-				{/if}
-			</article>
 		</section>
-	</div>
-
-	<footer class="mobile-footer kit-panel">
-		<a class="footer-item is-active" href="#dashboard">
-			<span class="material-symbols-outlined">dashboard</span>
-			<span>Dashboard</span>
-		</a>
-		<a class="footer-item" href="#checkin">
-			<span class="material-symbols-outlined">edit_note</span>
-			<span>Check-in</span>
-		</a>
-		<a class="footer-item" href="#kelp">
-			<span class="material-symbols-outlined">psychology</span>
-			<span>Coach</span>
-		</a>
-		<a class="footer-item" href="#sensor">
-			<span class="material-symbols-outlined">history</span>
-			<span>History</span>
-		</a>
-	</footer>
-</main>
+	</main>
 {/if}
 
 <style>
 	:global(:root) {
 		--background: #f4f6ff;
-		--surface-container-lowest: #ffffff;
-		--secondary: #005da7;
-		--tertiary-container: #fcc025;
-		--surface-container-high: #d3e4ff;
-		--error: #b31b25;
-		--surface-container-highest: #c9deff;
-		--on-surface: #212f42;
-		--on-tertiary-container: #563e00;
 		--surface: #f4f6ff;
 		--surface-container: #dce9ff;
 		--surface-container-low: #eaf1ff;
+		--on-surface: #212f42;
 		--on-surface-variant: #4e5c71;
-		--primary-dim: #005a50;
-		--outline: #6a788d;
 		--primary: #00675c;
 		--on-primary: #c1fff2;
-		--primary-container: #5bf4de;
-		--on-secondary-container: #004884;
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
-		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
+		--panel-bg: rgba(255, 255, 255, 0.78);
+		--panel-border: rgba(160, 174, 197, 0.3);
+		--field-bg: rgba(255, 255, 255, 0.88);
+		--field-border: rgba(160, 174, 197, 0.38);
 		--body-overlay-a: rgba(91, 244, 222, 0.36);
 		--body-overlay-b: rgba(183, 211, 255, 0.9);
 		--body-top: #f8fbff;
 		--body-bottom: #edf4ff;
-		--panel-bg: rgba(255, 255, 255, 0.76);
-		--panel-border: rgba(160, 174, 197, 0.3);
-		--nav-hover-bg: rgba(201, 222, 255, 0.7);
-		--hero-streak-bg: rgba(211, 228, 255, 0.72);
-		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
-		--sensor-bg: rgba(255, 255, 255, 0.92);
-		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
-		--field-bg: rgba(255, 255, 255, 0.88);
-		--field-border: rgba(160, 174, 197, 0.38);
-		--slider-bg: rgba(255, 255, 255, 0.8);
-		--button-subtle-bg: rgba(201, 222, 255, 0.7);
-		--chat-shell-bg: rgba(255, 255, 255, 0.55);
-		--chat-bubble-bg: white;
-		--prompt-chip-bg: white;
-		--saved-panel-bg: rgba(211, 228, 255, 0.58);
-		--metric-card-bg: var(--surface-container);
-		--icon-bg: white;
+		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
 	}
 
 	:global(:root[data-theme='dark']) {
 		--background: #091521;
-		--surface-container-lowest: #0d1c2a;
-		--secondary: #7fc7ff;
-		--tertiary-container: #f2bf47;
-		--surface-container-high: #173044;
-		--error: #ff8990;
-		--surface-container-highest: #1d3c52;
-		--on-surface: #edf5ff;
-		--on-tertiary-container: #3c2b00;
 		--surface: #0b1723;
 		--surface-container: #122636;
 		--surface-container-low: #0f2231;
+		--on-surface: #edf5ff;
 		--on-surface-variant: #bacbdd;
-		--primary-dim: #54d9c9;
-		--outline: #70879c;
 		--primary: #67efe0;
 		--on-primary: #073a35;
-		--primary-container: #197d73;
-		--on-secondary-container: #dcedff;
 		--secondary-container: #1b455f;
 		--outline-variant: #465a6c;
-		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
+		--panel-bg: rgba(11, 24, 36, 0.82);
+		--panel-border: rgba(92, 111, 127, 0.3);
+		--field-bg: rgba(16, 33, 46, 0.96);
+		--field-border: rgba(81, 103, 121, 0.42);
 		--body-overlay-a: rgba(91, 244, 222, 0.14);
 		--body-overlay-b: rgba(82, 120, 170, 0.18);
 		--body-top: #0d1a27;
 		--body-bottom: #07111a;
-		--panel-bg: rgba(11, 24, 36, 0.82);
-		--panel-border: rgba(92, 111, 127, 0.3);
-		--nav-hover-bg: rgba(31, 58, 80, 0.82);
-		--hero-streak-bg: rgba(18, 40, 58, 0.78);
-		--checkin-bg: linear-gradient(180deg, rgba(11, 24, 36, 0.96), rgba(15, 31, 44, 0.94));
-		--sensor-bg: rgba(11, 24, 36, 0.94);
-		--helper-bg: linear-gradient(180deg, rgba(18, 39, 55, 0.96), rgba(11, 24, 36, 0.94));
-		--field-bg: rgba(16, 33, 46, 0.96);
-		--field-border: rgba(81, 103, 121, 0.42);
-		--slider-bg: rgba(16, 33, 46, 0.96);
-		--button-subtle-bg: rgba(26, 52, 73, 0.9);
-		--chat-shell-bg: rgba(13, 28, 40, 0.72);
-		--chat-bubble-bg: rgba(16, 33, 46, 0.96);
-		--prompt-chip-bg: rgba(16, 33, 46, 0.96);
-		--saved-panel-bg: rgba(18, 39, 55, 0.88);
-		--metric-card-bg: rgba(18, 39, 55, 0.94);
-		--icon-bg: rgba(16, 33, 46, 0.96);
-	}
-
-	:global(html) {
-		scroll-behavior: smooth;
+		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
 	}
 
 	:global(body) {
@@ -1281,69 +546,23 @@ type OAuthProvider = 'google';
 		box-sizing: border-box;
 	}
 
-	:global(.material-symbols-outlined) {
-		font-variation-settings:
-			'FILL' 0,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
-	}
-
-	.filled-icon,
-	.streak-icon {
-		font-variation-settings:
-			'FILL' 1,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
-	}
-
-	.app-shell {
-		display: grid;
-		grid-template-columns: 18rem minmax(0, 1fr);
-		gap: 1.5rem;
-		min-height: 100vh;
-		padding: 1rem 1.5rem 1.5rem;
+	.page-shell,
+	.auth-shell {
+		max-width: 84rem;
+		margin: 0 auto;
+		padding: 1rem 1.5rem 3rem;
 	}
 
 	.auth-shell {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
-		padding: 1rem 1.5rem 1.5rem;
 	}
 
-	.auth-hero {
-		width: min(100%, 58rem);
-	}
-
-	.auth-panel {
-		padding: 2rem;
-	}
-
-	.auth-panel h1 {
-		margin: 0.35rem 0 0;
-		font-size: clamp(2.2rem, 5vw, 4rem);
-		line-height: 0.96;
-		color: var(--primary);
-	}
-
-	.auth-lead {
-		margin: 0.9rem 0 0;
-		max-width: 36rem;
-		font-size: 1.05rem;
-		line-height: 1.6;
-		color: var(--on-surface-variant);
-	}
-
-	.auth-actions {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.85rem;
-		margin-top: 1.5rem;
-	}
-
-	.kit-panel {
+	.auth-panel,
+	.hero-card,
+	.stress-card,
+	.checkin-card {
 		background: var(--panel-bg);
 		border: 1px solid var(--panel-border);
 		border-radius: 2rem;
@@ -1351,446 +570,170 @@ type OAuthProvider = 'google';
 		backdrop-filter: blur(18px);
 	}
 
-	.mobile-topbar,
-	.mobile-footer {
-		display: none;
-	}
-
-	.sidebar {
-		position: sticky;
-		top: 1.5rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		height: calc(100vh - 3rem);
-		padding: 1.5rem;
-	}
-
-	.sidebar-head,
-	.mobile-actions {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-	}
-
-	.brand-kicker,
-	.meta-label {
-		margin: 0;
-		font-size: 0.76rem;
-		font-weight: 800;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--primary);
-	}
-
-	.brand-subtitle,
-	.helper-subtitle,
-	.section-copy,
-	.inline-hint,
-	.inline-status,
-	.saved-copy {
-		margin: 0;
-		color: var(--on-surface-variant);
-		line-height: 1.55;
-	}
-
-	.sidebar-title {
-		margin: 0.3rem 0 0;
-		font-size: 1.7rem;
-		line-height: 1.04;
-	}
-
-	.profile-card {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-		margin-top: 1.25rem;
-		padding: 1rem;
-		border-radius: 1.5rem;
-		background: var(--surface-container-low);
-	}
-
-	.avatar,
-	.hero-streak-icon,
-	.badge-icon,
-	.icon-button {
-		display: grid;
-		place-items: center;
-	}
-
-	.avatar {
-		width: 3rem;
-		height: 3rem;
-		border-radius: 999px;
-		background: linear-gradient(135deg, var(--primary), var(--primary-container));
-		color: white;
-		font-weight: 800;
-	}
-
-	.profile-title,
-	.profile-copy {
-		margin: 0;
-	}
-
-	.profile-title {
-		font-weight: 700;
-	}
-
-	.profile-copy {
-		font-size: 0.9rem;
-		color: var(--on-surface-variant);
-	}
-
-	.nav-stack {
-		display: grid;
-		gap: 0.7rem;
-	}
-
-	.nav-item,
-	.footer-item {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		padding: 0.95rem 1rem;
-		border-radius: 1.3rem;
-		color: var(--on-surface-variant);
-		text-decoration: none;
-		font-weight: 700;
-		transition:
-			transform 160ms ease,
-			background 160ms ease,
-			color 160ms ease,
-			box-shadow 160ms ease;
-	}
-
-	.nav-item:hover,
-	.footer-item:hover {
-		transform: translateY(-1px);
-		background: var(--nav-hover-bg);
-		color: var(--on-surface);
-	}
-
-	.nav-item.is-active,
-	.footer-item.is-active {
-		background: linear-gradient(135deg, var(--primary), #138679);
-		color: white;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.28);
-	}
-
-	.sidebar-cta {
-		margin-top: auto;
-		display: grid;
-		gap: 0.75rem;
-	}
-
-	.signout-button {
-		width: 100%;
-	}
-
-	.main-column {
-		display: grid;
-		gap: 1.5rem;
+	.auth-panel {
+		width: min(100%, 44rem);
+		padding: 2rem;
 	}
 
 	.hero {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
+		display: grid;
+		grid-template-columns: minmax(0, 1.4fr) minmax(18rem, 0.8fr);
 		gap: 1.2rem;
-		padding: 0.5rem 0.25rem 0;
+		align-items: stretch;
+		padding-top: 0.5rem;
 	}
 
-	.hero h1 {
+	.eyebrow {
+		margin: 0 0 0.45rem;
+		font-size: 0.78rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--on-surface-variant);
+	}
+
+	h1,
+	h2 {
 		margin: 0;
-		font-size: clamp(2.8rem, 6vw, 4.7rem);
-		line-height: 0.95;
+	}
+
+	h1 {
+		font-size: clamp(2.5rem, 6vw, 4.8rem);
+		line-height: 0.96;
 		letter-spacing: -0.05em;
 		color: var(--primary);
 	}
 
+	.hero-copy,
+	.saved-copy,
+	.inline-hint,
+	.inline-status {
+		color: var(--on-surface-variant);
+	}
+
 	.hero-copy {
-		margin-top: 0.5rem;
-		font-size: 1.1rem;
-		font-weight: 600;
-		color: var(--on-surface-variant);
+		max-width: 42rem;
+		margin-top: 0.9rem;
+		font-size: 1.05rem;
+		line-height: 1.65;
 	}
 
-	.hero-streak {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		min-width: 15rem;
-		padding: 1rem 1.2rem;
-		background: var(--hero-streak-bg);
-	}
-
-	.hero-streak-icon,
-	.badge-icon {
-		width: 3.35rem;
-		height: 3.35rem;
-		border-radius: 1.15rem;
-	}
-
-	.hero-streak-icon {
-		background: var(--primary);
-		color: white;
-	}
-
-	.hero-streak-label,
-	.metric-label,
-	.saved-title {
-		margin: 0;
-		font-size: 0.82rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--on-surface-variant);
-	}
-
-	.hero-streak-value {
-		margin: 0.25rem 0 0;
-		font-size: 1.25rem;
-		font-weight: 800;
-		color: var(--primary);
-	}
-
-	.kit-grid {
+	.hero-card {
+		padding: 1.4rem;
 		display: grid;
-		grid-template-columns: repeat(12, minmax(0, 1fr));
-		gap: 1.5rem;
+		align-content: center;
+		gap: 0.55rem;
 	}
 
-	.stress-card,
-	.checkin-card,
-	.sensor-card,
-	.helper-card {
-		padding: 1.8rem;
-	}
-
-	.stress-card {
-		grid-column: span 4;
-		background: linear-gradient(180deg, var(--primary) 0%, #00594f 100%);
-		color: var(--on-primary);
-		border-color: rgba(91, 244, 222, 0.28);
-		box-shadow: 0 16px 34px rgba(0, 90, 80, 0.24);
-	}
-
-	.checkin-card {
-		grid-column: span 8;
-		background: var(--checkin-bg);
-	}
-
-	.sensor-card {
-		grid-column: span 5;
-		background: var(--sensor-bg);
-	}
-
-	.helper-card {
-		grid-column: span 7;
-		background: var(--helper-bg);
-	}
-
-	.stress-card .meta-label {
-		color: #ffffff;
-	}
-
-	.card-topline,
-	.section-heading,
-	.helper-heading,
-	.score-row,
-	.action-row,
-	.metric-pair,
-	.inline-buttons,
-	.pill-row {
-		display: flex;
-	}
-
-	.card-topline,
-	.section-heading,
-	.action-row {
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-	}
-
-	.helper-heading {
-		align-items: center;
-		gap: 0.9rem;
-	}
-
-	.section-heading h2,
-	.section-heading h3 {
-		margin: 0;
-		font-size: 2rem;
-		line-height: 1.05;
-	}
-
-	.score-row {
-		align-items: baseline;
-		gap: 0.35rem;
-		margin-top: 1rem;
-	}
-
-	.score-number,
-	.score-max {
-		margin: 0;
-	}
-
-	.score-number {
-		font-size: clamp(4rem, 8vw, 5.8rem);
-		font-weight: 800;
-		line-height: 0.95;
-	}
-
-	.score-max {
-		font-size: 1.25rem;
-		font-weight: 700;
-		opacity: 0.74;
-	}
-
-	.pill-row {
-		margin: 1rem 0 1.2rem;
-	}
-
-	.pill,
-	.source-badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.45rem 0.8rem;
-		border-radius: 999px;
-		font-size: 0.78rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-	}
-
-	.pill {
-		background: rgba(91, 244, 222, 0.18);
-		color: #e8fffa;
-		border: 1px solid rgba(255, 255, 255, 0.16);
-	}
-
-	.coach-box {
-		padding: 1rem;
-		border-radius: 1.5rem;
-		background: rgba(0, 90, 80, 0.26);
-	}
-
+	.hero-card-label,
+	.saved-title,
+	.field-label,
+	.slider-title,
 	.coach-title {
-		margin: 0 0 0.3rem;
-		font-weight: 800;
-	}
-
-	.coach-copy,
-	.coach-caption {
 		margin: 0;
-		line-height: 1.55;
+		font-size: 0.8rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--on-surface-variant);
 	}
 
-	.coach-caption {
-		margin-top: 0.5rem;
-		opacity: 0.82;
+	.hero-card-value,
+	.score-number {
+		margin: 0;
+		font-size: clamp(2.3rem, 5vw, 4rem);
+		font-weight: 800;
+		letter-spacing: -0.05em;
 	}
 
-	.status-group {
+	.hero-card-copy {
+		margin: 0;
+		line-height: 1.6;
+	}
+
+	.grid {
 		display: grid;
-		gap: 0.8rem;
-		margin-top: 1.2rem;
-	}
-
-	.output-panel {
-		margin: 1rem 0 0;
-		padding: 1rem;
-		white-space: pre-wrap;
-		background: rgba(0, 0, 0, 0.18);
-		border-radius: 1.25rem;
-		border: 1px solid rgba(255, 255, 255, 0.14);
-		font: 500 0.95rem/1.6 'Plus Jakarta Sans', sans-serif;
-		color: #f3fffc;
-	}
-
-	.slider-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 1rem;
+		grid-template-columns: minmax(0, 0.96fr) minmax(0, 1.04fr);
+		gap: 1.2rem;
 		margin-top: 1.25rem;
 	}
 
-	.slider-card,
-	.metric-card {
-		display: grid;
-		gap: 0.8rem;
-		padding: 1.1rem;
-		border-radius: 1.5rem;
-		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: var(--slider-bg);
+	.grid > * {
+		min-width: 0;
 	}
 
-	.slider-title {
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		font-weight: 700;
+	.stress-card,
+	.checkin-card {
+		padding: 1.5rem;
 	}
 
-	.slider-scale {
+	.stress-card {
+		background:
+			linear-gradient(180deg, rgba(0, 103, 92, 0.92), rgba(0, 90, 80, 0.98)),
+			var(--panel-bg);
+		color: #fff;
+	}
+
+	:global(:root[data-theme='dark']) .stress-card {
+		background:
+			linear-gradient(180deg, rgba(18, 98, 89, 0.96), rgba(7, 58, 53, 0.98)),
+			var(--panel-bg);
+	}
+
+	.card-topline,
+	.section-heading,
+	.saved-metrics,
+	.action-row,
+	.auth-actions,
+	.slider-scale,
+	.pill-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
-		font-size: 0.78rem;
-		color: var(--on-surface-variant);
+		gap: 0.85rem;
+		flex-wrap: wrap;
 	}
 
-	.slider-scale strong {
+	.score-row {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+		margin-top: 1rem;
+	}
+
+	.score-max {
+		margin: 0 0 0.45rem;
 		font-size: 1rem;
-		color: var(--primary);
+		opacity: 0.78;
 	}
 
-	.field {
-		display: grid;
-		gap: 0.5rem;
-		margin-top: 1.1rem;
-	}
-
-	.field-label {
+	.pill {
+		margin: 0;
+		padding: 0.55rem 0.8rem;
+		border-radius: 999px;
 		font-weight: 700;
+		background: rgba(255, 255, 255, 0.16);
 	}
 
-	.field input,
-	.persona-select select,
-	.message-input {
-		width: 100%;
-		border: 1px solid var(--field-border);
-		border-radius: 1.15rem;
-		padding: 0.95rem 1rem;
-		font: inherit;
-		color: var(--on-surface);
-		background: var(--field-bg);
+	.pill-secondary {
+		background: rgba(255, 255, 255, 0.1);
 	}
 
-	input[type='range'] {
-		width: 100%;
-		accent-color: var(--primary);
+	.coach-box,
+	.saved-panel {
+		margin-top: 1rem;
+		padding: 1rem 1.05rem;
+		border-radius: 1.4rem;
+		background: rgba(255, 255, 255, 0.12);
 	}
 
-	.action-row {
-		margin-top: 1.2rem;
+	.saved-panel {
+		background: color-mix(in srgb, var(--surface-container, #dce9ff) 68%, white);
 	}
 
-	.button,
-	.prompt-chip,
-	.icon-button,
-	.send-button {
-		border: none;
-		font: inherit;
-		cursor: pointer;
-		transition:
-			transform 160ms ease,
-			box-shadow 160ms ease,
-			background 160ms ease,
-			color 160ms ease;
+	.coach-copy {
+		margin: 0.45rem 0 0;
+		line-height: 1.7;
 	}
 
 	.button {
@@ -1798,398 +741,139 @@ type OAuthProvider = 'google';
 		align-items: center;
 		justify-content: center;
 		gap: 0.55rem;
-		padding: 0.95rem 1.35rem;
-		border-radius: 999px;
-		background: linear-gradient(135deg, var(--primary), #128d7f);
-		color: white;
+		padding: 0.9rem 1.15rem;
+		border-radius: 1rem;
+		border: 0;
+		text-decoration: none;
+		cursor: pointer;
+		font: inherit;
 		font-weight: 800;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
-	}
-
-	.button:hover,
-	.prompt-chip:hover,
-	.icon-button:hover,
-	.send-button:hover {
-		transform: translateY(-1px);
-	}
-
-	.button:active,
-	.prompt-chip:active,
-	.icon-button:active,
-	.send-button:active {
-		transform: translateY(2px);
-		box-shadow: none;
-	}
-
-	.button:disabled,
-	.send-button:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-		transform: none;
-		box-shadow: none;
-	}
-
-	.button-tertiary {
-		width: 100%;
-		background: linear-gradient(135deg, var(--tertiary-container), #ffd253);
-		color: var(--on-tertiary-container);
-		box-shadow: 0 6px 0 rgba(179, 139, 26, 0.26);
-	}
-
-	.button-outline {
-		width: 100%;
-		background: rgba(0, 103, 92, 0.06);
-		color: var(--primary);
-		border: 2px solid rgba(0, 103, 92, 0.18);
-		box-shadow: none;
+		background: var(--primary);
+		color: var(--on-primary);
 	}
 
 	.button-subtle {
-		background: var(--button-subtle-bg);
+		background: var(--secondary-container);
 		color: var(--on-surface);
-		box-shadow: none;
 	}
 
-	.button-ghost-on-dark {
-		background: rgba(255, 255, 255, 0.1);
-		color: #f3fffc;
-		border: 1px solid rgba(255, 255, 255, 0.16);
-		box-shadow: none;
+	.button-ghost {
+		background: rgba(255, 255, 255, 0.14);
+		color: #fff;
+		border: 1px solid rgba(255, 255, 255, 0.18);
 	}
 
-	.saved-panel {
+	.slider-grid {
+		display: grid;
+		gap: 0.85rem;
 		margin-top: 1rem;
+	}
+
+	.slider-card,
+	.field {
+		display: grid;
+		gap: 0.65rem;
+	}
+
+	.slider-card {
 		padding: 1rem;
-		border-radius: 1.4rem;
-		background: var(--saved-panel-bg);
-		border: 1px solid rgba(160, 174, 197, 0.24);
+		border-radius: 1.35rem;
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 76%, white);
+	}
+
+	.field {
+		margin-top: 1rem;
+	}
+
+	.field input {
+		width: 100%;
+		border: 1px solid var(--field-border);
+		background: var(--field-bg);
+		color: var(--on-surface);
+		border-radius: 1rem;
+		padding: 0.95rem 1rem;
+		font: inherit;
+	}
+
+	input[type='range'] {
+		width: 100%;
+		accent-color: var(--primary);
 	}
 
 	.saved-metrics {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.55rem;
-		margin: 0.7rem 0;
+		justify-content: flex-start;
 	}
 
 	.saved-metrics span {
-		padding: 0.45rem 0.75rem;
+		padding: 0.45rem 0.7rem;
 		border-radius: 999px;
-		background: white;
-		font-size: 0.8rem;
-		font-weight: 800;
-		color: var(--primary);
+		background: rgba(255, 255, 255, 0.55);
+		font-size: 0.92rem;
 	}
 
-	.metric-pair,
-	.inline-buttons {
-		gap: 0.9rem;
-	}
-
-	.metric-pair {
-		margin-top: 1.2rem;
-	}
-
-	.metric-card {
-		flex: 1;
-		background: var(--metric-card-bg);
-	}
-
-	.metric-value {
-		margin: 0;
-		font-size: 2.3rem;
-		font-weight: 800;
-		color: var(--primary);
-	}
-
-	.metric-value.secondary {
-		color: var(--secondary);
-	}
-
-	.metric-value span {
-		font-size: 1rem;
-		font-weight: 700;
-	}
-
-	.stacked-actions {
-		display: grid;
-		gap: 0.85rem;
-		margin-top: 1.2rem;
-	}
-
-	.live-indicator {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.45rem 0.75rem;
-		border-radius: 999px;
-		background: rgba(179, 27, 37, 0.08);
-		color: var(--error);
-		font-size: 0.78rem;
-		font-weight: 800;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-	}
-
-	.live-dot {
-		width: 0.55rem;
-		height: 0.55rem;
-		border-radius: 999px;
-		background: rgba(179, 27, 37, 0.3);
-	}
-
-	.dot-live {
-		background: var(--error);
-		animation: pulse 1.4s infinite;
-	}
-
-	.chat-shell {
-		display: grid;
-		gap: 0.8rem;
-		padding: 1rem;
-		margin-top: 1rem;
-		border-radius: 1.6rem;
-		background: var(--chat-shell-bg);
-		min-height: 14rem;
-	}
-
-	.chat-bubble {
-		max-width: 85%;
-		padding: 0.95rem 1rem;
-		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
-		background: var(--chat-bubble-bg);
-		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
-	}
-
-	.chat-user {
-		margin-left: auto;
-		border-radius: 1.2rem 1.2rem 0.4rem 1.2rem;
-		background: linear-gradient(135deg, rgba(0, 103, 92, 0.12), rgba(91, 244, 222, 0.28));
-	}
-
-	.chat-author {
-		margin: 0 0 0.25rem;
-		font-size: 0.76rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--on-surface-variant);
-	}
-
-	.chat-bubble p:last-child {
-		margin: 0;
-		line-height: 1.55;
-	}
-
-	.prompt-row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.65rem;
-		margin-top: 1rem;
-	}
-
-	.prompt-chip {
-		padding: 0.7rem 0.95rem;
-		border-radius: 999px;
-		background: var(--prompt-chip-bg);
-		color: var(--primary);
-		font-size: 0.78rem;
-		font-weight: 800;
-		box-shadow: 0 6px 16px rgba(31, 47, 82, 0.06);
-	}
-
-	.message-row {
-		position: relative;
-		margin-top: 1rem;
-	}
-
-	.message-input {
-		padding-right: 4.2rem;
-		border-radius: 1.3rem;
-	}
-
-	.send-button {
-		position: absolute;
-		top: 0.55rem;
-		right: 0.55rem;
-		display: grid;
-		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		border-radius: 0.95rem;
-		background: var(--primary);
-		color: white;
-		box-shadow: 0 2px 0 rgba(0, 77, 69, 0.25);
+	.saved-copy,
+	.inline-status,
+	.inline-hint {
+		margin: 0.7rem 0 0;
+		line-height: 1.6;
 	}
 
 	.source-badge {
 		width: fit-content;
-		margin-top: 0.9rem;
-		border: 1px solid rgba(160, 174, 197, 0.34);
-	}
-
-	.source-badge.live {
-		background: rgba(91, 244, 222, 0.16);
-		color: var(--primary);
+		margin-top: 1rem;
+		padding: 0.4rem 0.75rem;
+		border-radius: 999px;
+		font-size: 0.78rem;
+		font-weight: 800;
+		background: rgba(255, 255, 255, 0.14);
 	}
 
 	.source-badge.fallback {
-		background: rgba(252, 192, 37, 0.18);
-		color: var(--on-tertiary-container);
+		background: rgba(255, 209, 102, 0.22);
 	}
 
-	.inline-status.on-dark {
-		color: rgba(255, 255, 255, 0.88);
+	.output-panel {
+		margin: 1rem 0 0;
+		padding: 1rem;
+		white-space: pre-wrap;
+		line-height: 1.6;
+		border-radius: 1.2rem;
+		background: rgba(6, 28, 26, 0.32);
+		border: 1px solid rgba(255, 255, 255, 0.14);
+		color: inherit;
 	}
 
-	.level-low {
-		border-color: rgba(91, 244, 222, 0.28);
+	.on-dark {
+		color: rgba(255, 255, 255, 0.82);
 	}
 
-	.level-rising {
-		border-color: rgba(252, 192, 37, 0.42);
+	.badge-icon {
+		display: grid;
+		place-items: center;
+		width: 3rem;
+		height: 3rem;
+		border-radius: 1rem;
+		background: color-mix(in srgb, var(--surface-container, #dce9ff) 60%, white);
 	}
 
-	.level-high {
-		border-color: rgba(251, 81, 81, 0.48);
-	}
-
-	.accent-primary {
-		background: rgba(91, 244, 222, 0.24);
-		color: var(--primary);
-	}
-
-	.accent-secondary {
-		color: var(--secondary);
-	}
-
-	.accent-tertiary {
-		color: #9d7400;
-	}
-
-	.badge-icon.accent-tertiary {
-		background: rgba(252, 192, 37, 0.3);
-		color: var(--on-tertiary-container);
-	}
-
-	.persona-select {
-		min-width: 12rem;
-	}
-
-	.icon-button {
-		width: 2.9rem;
-		height: 2.9rem;
-		border-radius: 999px;
-		background: var(--icon-bg);
-		color: var(--primary);
-	}
-
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
-
-	@keyframes pulse {
-		0% {
-			box-shadow: 0 0 0 0 rgba(179, 27, 37, 0.4);
-		}
-
-		70% {
-			box-shadow: 0 0 0 8px rgba(179, 27, 37, 0);
-		}
-
-		100% {
-			box-shadow: 0 0 0 0 rgba(179, 27, 37, 0);
-		}
-	}
-
-	@media (max-width: 1080px) {
-		.app-shell {
+	@media (max-width: 900px) {
+		.hero,
+		.grid {
 			grid-template-columns: 1fr;
-			padding: 1rem;
 		}
+	}
 
-		.sidebar {
-			display: none;
-		}
-
-		.mobile-topbar {
-			position: sticky;
-			top: 1rem;
-			z-index: 10;
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			padding: 1rem 1.2rem;
-		}
-
-		.kit-grid {
-			grid-template-columns: repeat(6, minmax(0, 1fr));
-			padding-bottom: 5.5rem;
+	@media (max-width: 640px) {
+		.page-shell,
+		.auth-shell {
+			padding-inline: 1rem;
 		}
 
 		.stress-card,
 		.checkin-card,
-		.sensor-card,
-		.helper-card {
-			grid-column: span 6;
-		}
-
-		.mobile-footer {
-			position: fixed;
-			left: 1rem;
-			right: 1rem;
-			bottom: 1rem;
-			z-index: 20;
-			display: grid;
-			grid-template-columns: repeat(4, 1fr);
-			padding: 0.65rem;
-		}
-
-		.footer-item {
-			flex-direction: column;
-			justify-content: center;
-			gap: 0.3rem;
-			font-size: 0.72rem;
-			padding: 0.7rem 0.35rem;
-		}
-	}
-
-	@media (max-width: 720px) {
-		.hero {
-			flex-direction: column;
-			align-items: stretch;
-		}
-
-		.hero h1 {
-			font-size: clamp(2.4rem, 12vw, 3.6rem);
-		}
-
-		.slider-grid {
-			grid-template-columns: 1fr;
-		}
-
-		.metric-pair,
-		.inline-buttons,
-		.section-heading,
-		.action-row {
-			flex-direction: column;
-			align-items: stretch;
-		}
-
-		.chat-bubble {
-			max-width: 100%;
-		}
-
-		.persona-select {
-			width: 100%;
+		.auth-panel {
+			padding: 1.2rem;
+			border-radius: 1.5rem;
 		}
 	}
 </style>
