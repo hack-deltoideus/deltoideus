@@ -13,6 +13,14 @@
 		<span class="material-symbols-outlined">dashboard</span>
 		<span>Dashboard</span>
 	</a>
+	<a class:active={isActive('/app/history')} class="section-link" href="/app/history">
+		<span class="material-symbols-outlined">history</span>
+		<span>History</span>
+	</a>
+	<a class:active={isActive('/app/calendar')} class="section-link" href="/app/calendar">
+		<span class="material-symbols-outlined">calendar_month</span>
+		<span>Calendar</span>
+	</a>
 	<a class:active={isActive('/app/sensor')} class="section-link" href="/app/sensor">
 		<span class="material-symbols-outlined">monitor_heart</span>
 		<span>Live Data</span>

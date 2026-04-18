@@ -532,7 +532,7 @@
 				<span class="material-symbols-outlined">psychology</span>
 				<span>AI Coach</span>
 			</a>
-			<a class="nav-item" href="#sensor">
+			<a class="nav-item" href="/app/history">
 				<span class="material-symbols-outlined">history</span>
 				<span>History</span>
 			</a>
@@ -851,7 +851,7 @@
 			<span class="material-symbols-outlined">psychology</span>
 			<span>Coach</span>
 		</a>
-		<a class="footer-item" href="#sensor">
+		<a class="footer-item" href="/app/history">
 			<span class="material-symbols-outlined">history</span>
 			<span>History</span>
 		</a>
