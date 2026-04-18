@@ -495,7 +495,7 @@
 	<div class="main-column">
 		<section class="hero" id="dashboard">
 			<div>
-				<h1>Welcome back, Alex</h1>
+				<h1>Welcome back, {displayName}</h1>
 				<!-- <p class="hero-copy">Today is a beautiful day to nurture your mind.</p> -->
 			</div>
 
