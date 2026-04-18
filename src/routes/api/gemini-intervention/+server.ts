@@ -1,4 +1,5 @@
 import { env } from '$env/dynamic/private';
+import { generateGeminiText } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type GeminiRequestBody = {
@@ -12,11 +13,28 @@ type GeminiRequestBody = {
   stressor?: string;
 };
 
+function fallbackInterventionPlan(body: GeminiRequestBody): string {
+  const high = body.stressLevel === 'high' || (body.stressScore ?? 0) >= 70;
+
+  return [
+    '- Do 60 seconds of box breathing (inhale 4, hold 4, exhale 4, hold 4).',
+    high
+      ? '- Pause all non-urgent work and choose only one 5-minute task to start.'
+      : '- Pick one 10-minute task and ignore all others until it is done.',
+    '- Do a physical reset: cold water on face or stand and stretch for 2 minutes.',
+    `- Follow-up check in 15 minutes and re-rate stress (current stressor: ${body.stressor?.trim() || 'not specified'}).`
+  ].join('\n');
+}
+
 export const POST: RequestHandler = async ({ request, fetch }) => {
-  const apiKey = env.GEMINI_KEY;
+  const apiKey = env.GEMINI_KEY || env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
   if (!apiKey) {
-    return json({ error: 'Missing GEMINI_KEY on server.' }, { status: 500 });
+    return json(
+      { error: 'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY.' },
+      { status: 500 }
+    );
   }
+  const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
 
   const body = (await request.json()) as GeminiRequestBody;
 
@@ -37,37 +55,26 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`
   ].join('\n');
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 220
-        }
-      })
-    }
-  );
+  const result = await generateGeminiText({
+    apiKey,
+    fetch,
+    prompt,
+    temperature: 0.4,
+    maxOutputTokens: 220,
+    model
+  });
 
-  if (!response.ok) {
-    return json({ error: `Gemini API failed with status ${response.status}.` }, { status: 502 });
+  if (!result.ok && result.status === 429) {
+    return json({
+      plan: fallbackInterventionPlan(body),
+      warning: 'Gemini rate-limited (429). Showing local fallback intervention plan.',
+      source: 'fallback'
+    });
   }
 
-  const data = await response.json();
-  const text =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((part: { text?: string }) => part.text ?? '')
-      .join('\n')
-      .trim() ?? '';
-
-  if (!text) {
-    return json({ error: 'Gemini returned an empty response.' }, { status: 502 });
+  if (!result.ok) {
+    return json({ error: `${result.message} (model: ${result.model})` }, { status: 502 });
   }
 
-  return json({ plan: text });
+  return json({ plan: result.text, source: 'gemini', model: result.model });
 };

@@ -33,10 +33,14 @@
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
+	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
 	let helperReply = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
+	let helperSource = $state<'gemini' | 'fallback' | ''>('');
+	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
+	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
 
 	let isConnecting = $state(false);
 	let isSensorConnected = $state(false);
@@ -143,6 +147,7 @@
 	async function generateGeminiPlan() {
 		isGeneratingPlan = true;
 		geminiStatus = '';
+		geminiSource = '';
 
 		try {
 			const response = await fetch('/api/gemini-intervention', {
@@ -172,7 +177,8 @@
 				throw new Error('Gemini returned an empty plan.');
 			}
 
-			geminiStatus = 'AI intervention generated.';
+			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
+			geminiStatus = payload?.warning ?? 'AI intervention generated.';
 		} catch (error) {
 			geminiStatus = error instanceof Error ? error.message : 'Failed to generate plan.';
 		} finally {
@@ -183,6 +189,7 @@
 	async function askGeminiHelper() {
 		helperStatus = '';
 		helperReply = '';
+		helperSource = '';
 
 		const question = helperQuestion.trim();
 		if (!question) {
@@ -193,6 +200,11 @@
 		isAskingHelper = true;
 
 		try {
+			const nextHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
+				...helperHistory,
+				{ role: 'user', text: question }
+			];
+
 			const response = await fetch('/api/gemini-helper', {
 				method: 'POST',
 				headers: {
@@ -200,6 +212,8 @@
 				},
 				body: JSON.stringify({
 					question,
+					persona: helperPersona,
+					history: helperHistory,
 					mood,
 					workload,
 					sleepQuality,
@@ -220,12 +234,23 @@
 				throw new Error('Kelp returned an empty response.');
 			}
 
-			helperStatus = 'Kelp replied.';
+			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
+				...nextHistory,
+				{ role: 'assistant', text: helperReply }
+			];
+			helperHistory = updatedHistory.slice(-8);
+
+			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
+			helperStatus = payload?.warning ?? 'Kelp replied.';
 		} catch (error) {
 			helperStatus = error instanceof Error ? error.message : 'Failed to ask helper.';
 		} finally {
 			isAskingHelper = false;
 		}
+	}
+
+	function applyQuickPrompt(prompt: string) {
+		helperQuestion = prompt;
 	}
 </script>
 
@@ -306,7 +331,14 @@
 		</article>
 
 		<article class="card score {levelClass}">
-			<h2>Stress Detection</h2>
+			<div class="card-header">
+				<h2>Stress Detection</h2>
+				{#if geminiSource}
+					<span class="source-badge {geminiSource === 'fallback' ? 'is-fallback' : 'is-live'}">
+						{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+					</span>
+				{/if}
+			</div>
 			<p class="score-value">{stressScore}</p>
 			<p class="badge">{stressLevel.toUpperCase()}</p>
 			<p class="intervention">{intervention}</p>
@@ -324,8 +356,30 @@
 		</article>
 
 		<article class="card helper">
-			<h2>Ask Kelp (Gemini Helper)</h2>
-			<p class="muted">Personality: warm, direct, practical coach.</p>
+			<div class="card-header">
+				<h2>Ask Kelp (Gemini Helper)</h2>
+				{#if helperSource}
+					<span class="source-badge {helperSource === 'fallback' ? 'is-fallback' : 'is-live'}">
+						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+					</span>
+				{/if}
+			</div>
+			<p class="muted">Powered by Gemini via server route using GEMINI_KEY.</p>
+
+			<label>
+				Personality
+				<select bind:value={helperPersona}>
+					<option value="calm-coach">Calm Coach</option>
+					<option value="tough-love">Tough Love</option>
+					<option value="study-planner">Study Planner</option>
+				</select>
+			</label>
+
+			<div class="quick-prompts">
+				<button class="ghost chip" onclick={() => applyQuickPrompt('Build me a 15-minute plan to reduce stress before studying.')}>15-minute reset plan</button>
+				<button class="ghost chip" onclick={() => applyQuickPrompt('I keep procrastinating. Give me one concrete start routine.')}>Beat procrastination</button>
+				<button class="ghost chip" onclick={() => applyQuickPrompt('I am anxious before an exam. Give me a 3-step focus sequence.')}>Pre-exam focus</button>
+			</div>
 
 			<label>
 				Your question
@@ -342,6 +396,15 @@
 
 			{#if helperReply}
 				<pre class="ai-plan">{helperReply}</pre>
+			{/if}
+
+			{#if helperHistory.length > 0}
+				<div class="history">
+					<p class="label">Recent chat</p>
+					{#each helperHistory as msg}
+						<p class="msg"><strong>{msg.role === 'user' ? 'You' : 'Kelp'}:</strong> {msg.text}</p>
+					{/each}
+				</div>
 			{/if}
 		</article>
 	</section>
@@ -396,6 +459,35 @@
 		box-shadow: 0 10px 28px rgba(2, 8, 15, 0.36);
 	}
 
+	.card-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.6rem;
+		margin-bottom: 0.4rem;
+	}
+
+	.source-badge {
+		font-size: 0.72rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		padding: 0.2rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid rgba(255, 255, 255, 0.28);
+	}
+
+	.source-badge.is-fallback {
+		background: rgba(255, 196, 99, 0.18);
+		color: #ffe2aa;
+		border-color: rgba(255, 196, 99, 0.5);
+	}
+
+	.source-badge.is-live {
+		background: rgba(92, 230, 176, 0.18);
+		color: #bfffe4;
+		border-color: rgba(92, 230, 176, 0.46);
+	}
+
 	.muted,
 	.hint {
 		color: #9ec8bc;
@@ -440,6 +532,14 @@
 		padding: 0.55rem 0.65rem;
 	}
 
+	select {
+		border: 1px solid rgba(137, 226, 201, 0.35);
+		background: rgba(11, 30, 39, 0.75);
+		color: #e6f8f4;
+		border-radius: 0.6rem;
+		padding: 0.55rem 0.65rem;
+	}
+
 	textarea {
 		border: 1px solid rgba(137, 226, 201, 0.35);
 		background: rgba(11, 30, 39, 0.75);
@@ -463,6 +563,18 @@
 		background: rgba(67, 117, 129, 0.24);
 		color: #d6f4ec;
 		border: 1px solid rgba(155, 214, 198, 0.22);
+	}
+
+	.quick-prompts {
+		display: flex;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.7rem;
+	}
+
+	.chip {
+		font-size: 0.82rem;
+		padding: 0.4rem 0.6rem;
 	}
 
 	button:disabled {
@@ -525,6 +637,18 @@
 		color: #d9f5ee;
 		font-family: 'IBM Plex Mono', 'Menlo', monospace;
 		font-size: 0.85rem;
+	}
+
+	.history {
+		margin-top: 0.8rem;
+		padding-top: 0.7rem;
+		border-top: 1px dashed rgba(155, 214, 198, 0.3);
+	}
+
+	.msg {
+		margin: 0.35rem 0;
+		font-size: 0.88rem;
+		color: #cdebe4;
 	}
 
 	@media (max-width: 640px) {
