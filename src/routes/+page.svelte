@@ -4,6 +4,19 @@
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 
+	type SavedCheckIn = {
+		id: string;
+		created_at: string;
+		mood: number;
+		workload: number;
+		sleep_quality: number;
+		stress_score: number;
+		stress_level: StressLevel;
+		heart_rate: number | null;
+		rr_ms: number | null;
+		stressor: string | null;
+	};
+
 	let mood = $state(5);
 	let workload = $state(5);
 	let sleepQuality = $state(5);
@@ -30,6 +43,7 @@
 
 	let isSubmitting = $state(false);
 	let submitStatus = $state('');
+	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
@@ -100,6 +114,7 @@
 
 	async function submitCheckIn() {
 		submitStatus = '';
+		lastSavedCheckIn = null;
 
 		if (!supabase) {
 			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
@@ -109,7 +124,7 @@
 		isSubmitting = true;
 
 		try {
-			const { error: checkInError } = await supabase.from('check_ins').insert({
+			const checkInPayload = {
 				mood,
 				workload,
 				sleep_quality: sleepQuality,
@@ -118,11 +133,23 @@
 				heart_rate: heartRate,
 				rr_ms: rrMs,
 				stressor: stressor.trim() || null
-			});
+			};
+
+			const { data: savedCheckIn, error: checkInError } = await supabase
+				.from('check_ins')
+				.insert(checkInPayload)
+				.select('id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor')
+				.single();
 
 			if (checkInError) {
 				throw checkInError;
 			}
+
+			if (!savedCheckIn) {
+				throw new Error('Check-in save succeeded, but the saved row was not returned.');
+			}
+
+			lastSavedCheckIn = savedCheckIn as SavedCheckIn;
 
 			if (stressLevel === 'rising' || stressLevel === 'high') {
 				const { error: interventionError } = await supabase.from('interventions').insert({
@@ -136,7 +163,7 @@
 				}
 			}
 
-			submitStatus = 'Check-in saved. You are demo-ready.';
+			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
 		} catch (error) {
 			submitStatus = error instanceof Error ? error.message : 'Failed to save check-in';
 		} finally {
@@ -327,6 +354,25 @@
 
 			{#if submitStatus}
 				<p class="status">{submitStatus}</p>
+			{/if}
+
+			{#if lastSavedCheckIn}
+				<div class="saved-preview">
+					<p class="label">Last saved check-in</p>
+					<p class="saved-row">
+						<strong>{lastSavedCheckIn.stress_level.toUpperCase()}</strong>
+						<span>{lastSavedCheckIn.stress_score}</span>
+						<span>Mood {lastSavedCheckIn.mood}</span>
+						<span>Workload {lastSavedCheckIn.workload}</span>
+						<span>Sleep {lastSavedCheckIn.sleep_quality}</span>
+					</p>
+					<p class="muted saved-meta">
+						Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm and RR {lastSavedCheckIn.rr_ms ?? '--'} ms.
+					</p>
+					{#if lastSavedCheckIn.stressor}
+						<p class="muted saved-meta">Stressor: {lastSavedCheckIn.stressor}</p>
+					{/if}
+				</div>
 			{/if}
 		</article>
 
@@ -522,6 +568,23 @@
 		font-size: 0.8rem;
 		color: #9ec8bc;
 		margin-bottom: 0.2rem;
+	}
+
+	.saved-preview {
+		margin-top: 0.9rem;
+		padding-top: 0.9rem;
+		border-top: 1px solid rgba(129, 212, 191, 0.18);
+	}
+
+	.saved-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.6rem;
+		margin: 0.35rem 0 0;
+	}
+
+	.saved-meta {
+		margin: 0.45rem 0 0;
 	}
 
 	.actions {
