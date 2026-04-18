@@ -3,7 +3,14 @@
 	import { onMount } from 'svelte';
 	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
-	import { connectHeartRateMonitor } from '$lib/polar';
+	import {
+		connectSharedSensor,
+		disconnectSharedSensor,
+		endSharedSession,
+		sensorSession,
+		simulateSharedSpike,
+		startSharedSession
+	} from '$lib/sensor-session';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -73,11 +80,12 @@
 	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
 
 	let isConnecting = $state(false);
+	let isSavingSession = $state(false);
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
-
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	let sessionStartedAt = $state<string | null>(null);
+	let sessionSamples = $state<Array<{ elapsed_ms: number }>>([]);
 
 	const levelClass = $derived(`level-${stressLevel}`);
 	const levelLabel = $derived(
@@ -94,13 +102,23 @@
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 
-	if (browser) {
-		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
-	}
-
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			heartRate = state.heartRate;
+			rrMs = state.rrMs;
+			isConnecting = state.isConnecting;
+			isSavingSession = state.isSavingSession;
+			isSensorConnected = state.isSensorConnected;
+			canUseBluetooth = state.canUseBluetooth;
+			sensorStatus = state.sensorStatus;
+			sessionStartedAt = state.sessionStartedAt;
+			sessionSamples = state.sessionSamples;
+		});
+
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -122,6 +140,7 @@
 
 		return () => {
 			subscription.unsubscribe();
+			unsubscribeSensor();
 		};
 	});
 
@@ -201,46 +220,37 @@
 	}
 
 	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
-
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
-
-		try {
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-			});
-
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sensorStatus = describeError(error, 'Could not connect to sensor');
-		} finally {
-			isConnecting = false;
-		}
+		await connectSharedSensor();
 	}
 
 	async function disconnectSensor() {
-		if (!stopSensor) {
-			return;
-		}
-
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
-		sensorStatus = 'Disconnected';
+		await disconnectSharedSensor();
 	}
 
 	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
+		simulateSharedSpike();
+	}
 
-		heartRate = randomHr;
-		rrMs = randomRr;
-		sensorStatus = 'Simulated stress signal loaded';
+	function startSession() {
+		startSharedSession(Boolean(currentUser));
+	}
+
+	async function endSession() {
+		await endSharedSession(currentUser?.id ?? null);
+	}
+
+	function formatFullTimestamp(dateString: string | null): string {
+		if (!dateString) {
+			return '--';
+		}
+
+		return new Date(dateString).toLocaleString([], {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
 	}
 
 	async function submitCheckIn() {
@@ -683,6 +693,17 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
+						<span>
+							{sessionStartedAt
+								? isSavingSession
+									? 'Ending Session...'
+									: 'End Session'
+								: 'Start Session'}
+						</span>
+					</button>
+
 					<div class="inline-buttons">
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
@@ -692,6 +713,15 @@
 				</div>
 
 				<p class="section-copy">{sensorStatus}</p>
+
+				<div class="saved-panel">
+					<p class="saved-title">Session status</p>
+					<div class="saved-metrics">
+						<span>{sessionStartedAt ? 'In progress' : 'Not recording'}</span>
+						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
+						<span>{sessionSamples.length} captured samples</span>
+					</div>
+				</div>
 
 				{#if !canUseBluetooth}
 					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
@@ -1477,6 +1507,10 @@
 		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 		box-shadow: none;
+	}
+
+	.session-button {
+		width: 100%;
 	}
 
 	.button-ghost-on-dark {
