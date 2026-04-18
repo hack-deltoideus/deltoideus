@@ -171,7 +171,7 @@
 
 <header class="site-nav-shell">
 	<nav class="site-nav">
-		<a class="site-brand" href="/">Sanctuary</a>
+		<a class="site-brand" href="/">Study Buddy</a>
 
 		<div class="site-actions">
 			<button class="theme-toggle" type="button" aria-label="Toggle theme" onclick={toggleTheme}>
