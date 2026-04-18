@@ -476,13 +476,13 @@
 				<span class="material-symbols-outlined">dashboard</span>
 				<span>Dashboard</span>
 			</a>
-			<a class="nav-item" href="#checkin">
-				<span class="material-symbols-outlined">edit_note</span>
-				<span>Check-in</span>
-			</a>
 			<a class="nav-item" href="#kelp">
 				<span class="material-symbols-outlined">psychology</span>
 				<span>AI Coach</span>
+			</a>
+			<a class="nav-item" href="/app/sensor">
+				<span class="material-symbols-outlined">monitor_heart</span>
+				<span>Live Data</span>
 			</a>
 			<a class="nav-item" href="/app/history">
 				<span class="material-symbols-outlined">history</span>
@@ -788,13 +788,13 @@
 			<span class="material-symbols-outlined">dashboard</span>
 			<span>Dashboard</span>
 		</a>
-		<a class="footer-item" href="#checkin">
-			<span class="material-symbols-outlined">edit_note</span>
-			<span>Check-in</span>
-		</a>
 		<a class="footer-item" href="#kelp">
 			<span class="material-symbols-outlined">psychology</span>
 			<span>Coach</span>
+		</a>
+		<a class="footer-item" href="/app/sensor">
+			<span class="material-symbols-outlined">monitor_heart</span>
+			<span>Live Data</span>
 		</a>
 		<a class="footer-item" href="/app/history">
 			<span class="material-symbols-outlined">history</span>
