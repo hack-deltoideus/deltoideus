@@ -342,7 +342,8 @@
 			<p class="score-value">{stressScore}</p>
 			<p class="badge">{stressLevel.toUpperCase()}</p>
 			<p class="intervention">{intervention}</p>
-			<button class="ghost" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
+			<p class="muted ai-copy">Turn the current stress signal into a clean 4-step AI intervention.</p>
+			<button class="ghost ai-trigger" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
 				{isGeneratingPlan ? 'Generating AI Plan...' : 'Generate Gemini Plan'}
 			</button>
 
@@ -351,13 +352,23 @@
 			{/if}
 
 			{#if geminiPlan}
-				<pre class="ai-plan">{geminiPlan}</pre>
+				<div class="ai-surface">
+					<div class="ai-surface-header">
+						<span>AI Intervention Plan</span>
+						<span class="muted">Structured for immediate action</span>
+					</div>
+					<pre class="ai-plan">{geminiPlan}</pre>
+				</div>
 			{/if}
 		</article>
 
-		<article class="card helper">
-			<div class="card-header">
-				<h2>Ask Kelp (Gemini Helper)</h2>
+		<article class="card helper ai-studio">
+			<div class="ai-studio-head">
+				<div>
+					<p class="eyebrow studio-kicker">AI Coach</p>
+					<h2>Ask Kelp (Gemini Helper)</h2>
+					<p class="muted studio-copy">Longer guidance, cleaner formatting, and room for full replies.</p>
+				</div>
 				{#if helperSource}
 					<span class="source-badge {helperSource === 'fallback' ? 'is-fallback' : 'is-live'}">
 						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
@@ -383,10 +394,10 @@
 
 			<label>
 				Your question
-				<textarea bind:value={helperQuestion} rows="4" maxlength="400"></textarea>
+				<textarea bind:value={helperQuestion} rows="5" maxlength="700"></textarea>
 			</label>
 
-			<button class="ghost" onclick={askGeminiHelper} disabled={isAskingHelper}>
+			<button class="ghost ai-trigger" onclick={askGeminiHelper} disabled={isAskingHelper}>
 				{isAskingHelper ? 'Kelp is thinking...' : 'Ask Kelp'}
 			</button>
 
@@ -395,7 +406,13 @@
 			{/if}
 
 			{#if helperReply}
-				<pre class="ai-plan">{helperReply}</pre>
+				<div class="ai-surface">
+					<div class="ai-surface-header">
+						<span>Kelp Response</span>
+						<span class="muted">Expanded AI guidance</span>
+					</div>
+					<pre class="ai-plan ai-plan-helper">{helperReply}</pre>
+				</div>
 			{/if}
 
 			{#if helperHistory.length > 0}
@@ -586,6 +603,16 @@
 		text-align: center;
 	}
 
+	.ai-copy {
+		margin-top: 0.9rem;
+		margin-bottom: 0.9rem;
+	}
+
+	.ai-trigger {
+		width: 100%;
+		justify-content: center;
+	}
+
 	.score-value {
 		margin: 0.35rem 0;
 		font-size: clamp(2rem, 6vw, 3.5rem);
@@ -628,15 +655,70 @@
 
 	.ai-plan {
 		margin-top: 0.8rem;
-		padding: 0.75rem;
+		padding: 1rem;
 		text-align: left;
 		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		word-break: break-word;
 		border-radius: 0.7rem;
 		border: 1px solid rgba(155, 214, 198, 0.3);
-		background: rgba(10, 24, 35, 0.6);
+		background: rgba(7, 18, 30, 0.82);
 		color: #d9f5ee;
 		font-family: 'IBM Plex Mono', 'Menlo', monospace;
-		font-size: 0.85rem;
+		font-size: 0.9rem;
+		line-height: 1.6;
+		max-height: 24rem;
+		overflow: auto;
+	}
+
+	.ai-plan-helper {
+		max-height: 30rem;
+	}
+
+	.ai-surface {
+		margin-top: 0.9rem;
+		padding: 0.85rem;
+		border-radius: 1rem;
+		background:
+			linear-gradient(180deg, rgba(43, 103, 114, 0.18), rgba(9, 21, 33, 0.72)),
+			radial-gradient(circle at top right, rgba(106, 236, 212, 0.15), transparent 38%);
+		border: 1px solid rgba(120, 228, 205, 0.22);
+		box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+	}
+
+	.ai-surface-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.7rem;
+		font-size: 0.78rem;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: #c4f4e8;
+	}
+
+	.ai-studio {
+		grid-column: span 2;
+		background:
+			linear-gradient(150deg, rgba(15, 41, 55, 0.97), rgba(7, 17, 28, 0.98)),
+			radial-gradient(circle at top left, rgba(107, 237, 214, 0.08), transparent 34%);
+		border-color: rgba(110, 231, 207, 0.28);
+	}
+
+	.ai-studio-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+		margin-bottom: 0.6rem;
+	}
+
+	.studio-kicker {
+		margin-bottom: 0.35rem;
+	}
+
+	.studio-copy {
+		margin-top: 0.2rem;
 	}
 
 	.history {
@@ -658,6 +740,16 @@
 
 		.metrics {
 			grid-template-columns: 1fr;
+		}
+
+		.ai-studio {
+			grid-column: auto;
+		}
+
+		.ai-studio-head,
+		.ai-surface-header {
+			flex-direction: column;
+			align-items: flex-start;
 		}
 	}
 </style>

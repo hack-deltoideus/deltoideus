@@ -34,15 +34,16 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       { status: 500 }
     );
   }
-  const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 
   const body = (await request.json()) as GeminiRequestBody;
 
   const prompt = [
     'You are a calm student stress coach for a hackathon MVP.',
-    'Return only a short action plan in 4 bullets.',
+    'Return only a practical action plan in 4 bullets.',
     'Each bullet must be practical and take less than 5 minutes.',
     'Include one breathing step, one immediate workload step, one physical reset, and one follow-up check.',
+    'Keep the total answer under 140 words.',
     '',
     'Current state:',
     `- Mood: ${body.mood ?? 'n/a'}/10`,
@@ -60,7 +61,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     fetch,
     prompt,
     temperature: 0.4,
-    maxOutputTokens: 220,
+    maxOutputTokens: 420,
     model
   });
 

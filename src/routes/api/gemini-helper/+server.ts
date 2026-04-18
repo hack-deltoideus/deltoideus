@@ -49,7 +49,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
       { status: 500 }
     );
   }
-  const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 
   const body = (await request.json()) as HelperRequestBody;
   const question = body.question?.trim();
@@ -76,10 +76,12 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     'Personality rules:',
     `- Style: ${personaDescription}.`,
     '- Never be cringe or overly formal.',
-    '- Keep answers short and action-focused.',
+    '- Keep answers concise but complete and action-focused.',
     '- Use plain language and avoid medical claims.',
     '- End with one best next step prefixed with "Next step:".',
     '- If stress sounds severe, suggest contacting a trusted person or campus support.',
+    '- Use short paragraphs or a few numbered steps when helpful.',
+    '- Keep the total answer under 220 words.',
     '',
     'Current student state:',
     `- Mood: ${body.mood ?? 'n/a'}/10`,
@@ -101,7 +103,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     fetch,
     prompt,
     temperature: 0.6,
-    maxOutputTokens: 260,
+    maxOutputTokens: 700,
     model
   });
 

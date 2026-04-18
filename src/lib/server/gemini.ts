@@ -44,7 +44,7 @@ export async function generateGeminiText({
 	prompt,
 	temperature,
 	maxOutputTokens,
-	model = 'gemini-2.5-flash'
+	model = 'gemini-2.5-flash-lite'
 }: GeminiOptions): Promise<GeminiResult> {
 	const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
@@ -59,7 +59,10 @@ export async function generateGeminiText({
 				contents: [{ role: 'user', parts: [{ text: prompt }] }],
 				generationConfig: {
 					temperature,
-					maxOutputTokens
+					maxOutputTokens,
+					thinkingConfig: {
+						thinkingBudget: 0
+					}
 				}
 			})
 		});
