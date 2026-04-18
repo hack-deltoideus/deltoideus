@@ -7,6 +7,7 @@
 	type SavedCheckIn = {
 		id: string;
 		created_at: string;
+		sensor_session_id: string | null;
 		mood: number;
 		workload: number;
 		sleep_quality: number;
@@ -14,7 +15,47 @@
 		stress_level: StressLevel;
 		heart_rate: number | null;
 		rr_ms: number | null;
+		hrv_ms: number | null;
+		session_elapsed_seconds: number | null;
 		stressor: string | null;
+	};
+
+	type SavedSensorSession = {
+		id: string;
+		started_at: string;
+		ended_at: string | null;
+		duration_seconds: number | null;
+		avg_heart_rate: number | null;
+		avg_rr_ms: number | null;
+		rr_variability_ms: number | null;
+		avg_hrv_ms: number | null;
+		last_hrv_ms: number | null;
+		max_heart_rate: number | null;
+		sample_count: number;
+		session_summary: SessionSummary | null;
+	};
+
+	type SessionSummary = {
+		sessionId: string;
+		startedAt: string;
+		endedAt: string;
+		durationSeconds: number;
+		sampleCount: number;
+		averageHeartRate: number | null;
+		averageRrMs: number | null;
+		rrVariabilityMs: number | null;
+		averageHrvMs: number | null;
+		maxHeartRate: number | null;
+		lastHeartRate: number | null;
+		lastRrMs: number | null;
+		lastHrvMs: number | null;
+	};
+
+	type SupabaseLikeError = {
+		message?: string;
+		details?: string;
+		hint?: string;
+		code?: string;
 	};
 
 	let mood = $state(5);
@@ -24,6 +65,7 @@
 
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
+	let hrvMs = $state<number | undefined>(undefined);
 	let baselineHeartRate = $state(65);
 
 	const stressResult = $derived(
@@ -60,13 +102,266 @@
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
+	let sensorPersistenceStatus = $state('');
+	let activeSensorSessionId = $state<string | null>(null);
+	let activeSessionStartedAt = $state<string | null>(null);
+	let lastSavedSensorSession = $state<SavedSensorSession | null>(null);
+	let liveSessionSampleCount = $state(0);
+	let liveSessionMaxHeartRate = $state<number | null>(null);
+	let liveSessionAvgHeartRate = $state<number | null>(null);
+	let liveSessionAvgRrMs = $state<number | null>(null);
+	let liveSessionRrVariabilityMs = $state<number | null>(null);
+	let liveSessionAvgHrvMs = $state<number | null>(null);
 
 	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	let liveSessionHeartRateTotal = 0;
+	let liveSessionRrTotal = 0;
+	let liveSessionHrvTotal = 0;
+	let liveSessionHrvCount = 0;
+	let liveSessionRrCount = 0;
+	let liveSessionPrevRrMs: number | null = null;
+	let liveSessionSquaredDiffTotal = 0;
+	let liveSessionRrDiffCount = 0;
+	let sessionStartPromise: Promise<string | null> | null = null;
+	let isStartingSession = $state(false);
+	let isEndingSession = $state(false);
 
 	const levelClass = $derived(`level-${stressLevel}`);
 
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
+	}
+
+	function describeError(error: unknown, fallback: string): string {
+		if (error instanceof Error && error.message) {
+			return error.message;
+		}
+
+		if (error && typeof error === 'object') {
+			const candidate = error as SupabaseLikeError;
+			const parts = [candidate.message, candidate.details, candidate.hint].filter(Boolean);
+			if (parts.length > 0) {
+				return parts.join(' ');
+			}
+
+			if (candidate.code) {
+				return `${fallback} (${candidate.code})`;
+			}
+		}
+
+		return fallback;
+	}
+
+	function resetLiveSensorSessionStats() {
+		liveSessionSampleCount = 0;
+		liveSessionHeartRateTotal = 0;
+		liveSessionMaxHeartRate = null;
+		liveSessionAvgHeartRate = null;
+		liveSessionAvgRrMs = null;
+		liveSessionRrVariabilityMs = null;
+		liveSessionAvgHrvMs = null;
+		liveSessionRrTotal = 0;
+		liveSessionHrvTotal = 0;
+		liveSessionHrvCount = 0;
+		liveSessionRrCount = 0;
+		liveSessionPrevRrMs = null;
+		liveSessionSquaredDiffTotal = 0;
+		liveSessionRrDiffCount = 0;
+	}
+
+	async function startSensorSession(): Promise<string | null> {
+		if (!supabase) {
+			sensorPersistenceStatus = 'Sensor data is local only until Supabase is configured.';
+			return null;
+		}
+
+		if (activeSensorSessionId) {
+			return activeSensorSessionId;
+		}
+
+		if (sessionStartPromise) {
+			return sessionStartPromise;
+		}
+
+		sessionStartPromise = (async () => {
+			resetLiveSensorSessionStats();
+			const startedAt = new Date().toISOString();
+			const { data, error } = await supabase
+				.from('sensor_sessions')
+				.insert({ started_at: startedAt })
+				.select(
+					'id, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, rr_variability_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, session_summary'
+				)
+				.single();
+
+			if (error) {
+				throw error;
+			}
+
+			if (!data) {
+				throw new Error('Sensor session save succeeded, but no session row was returned.');
+			}
+
+			activeSensorSessionId = data.id;
+			activeSessionStartedAt = data.started_at ?? startedAt;
+			lastSavedSensorSession = data as SavedSensorSession;
+			sensorPersistenceStatus = `Session started (${data.id.slice(0, 8)}...). Click End Session to save the summary.`;
+
+			return data.id;
+		})()
+			.catch((error) => {
+				sensorPersistenceStatus = describeError(error, 'Failed to start sensor session.');
+				return null;
+			})
+			.finally(() => {
+				sessionStartPromise = null;
+			});
+
+		return sessionStartPromise;
+	}
+
+	async function handleStartSession() {
+		if (isStartingSession || activeSensorSessionId) {
+			return;
+		}
+
+		isStartingSession = true;
+		try {
+			await startSensorSession();
+		} finally {
+			isStartingSession = false;
+		}
+	}
+
+	function recordSensorReading(reading: { heartRate: number; rrMs?: number; hrvMs?: number }) {
+		liveSessionSampleCount += 1;
+		liveSessionHeartRateTotal += reading.heartRate;
+		liveSessionMaxHeartRate =
+			liveSessionMaxHeartRate === null
+				? reading.heartRate
+				: Math.max(liveSessionMaxHeartRate, reading.heartRate);
+
+		liveSessionAvgHeartRate = Number(
+			(liveSessionHeartRateTotal / liveSessionSampleCount).toFixed(2)
+		);
+
+		if (typeof reading.rrMs === 'number') {
+			liveSessionRrTotal += reading.rrMs;
+			liveSessionRrCount += 1;
+			liveSessionAvgRrMs = Number((liveSessionRrTotal / liveSessionRrCount).toFixed(2));
+
+			if (liveSessionPrevRrMs !== null) {
+				const diff = reading.rrMs - liveSessionPrevRrMs;
+				liveSessionSquaredDiffTotal += diff * diff;
+				liveSessionRrDiffCount += 1;
+				liveSessionRrVariabilityMs = Number(
+					Math.sqrt(liveSessionSquaredDiffTotal / liveSessionRrDiffCount).toFixed(2)
+				);
+			}
+
+			liveSessionPrevRrMs = reading.rrMs;
+		}
+
+		if (typeof reading.hrvMs === 'number') {
+			liveSessionHrvTotal += reading.hrvMs;
+			liveSessionHrvCount += 1;
+			liveSessionAvgHrvMs = Number((liveSessionHrvTotal / liveSessionHrvCount).toFixed(2));
+		}
+
+		sensorPersistenceStatus = `Tracking session locally: ${liveSessionSampleCount} sample${liveSessionSampleCount === 1 ? '' : 's'} captured.`;
+	}
+
+	function queueSensorReading(reading: { heartRate: number; rrMs?: number; hrvMs?: number }) {
+		heartRate = reading.heartRate;
+		rrMs = reading.rrMs;
+		hrvMs = reading.hrvMs;
+
+		if (activeSensorSessionId) {
+			recordSensorReading(reading);
+		}
+	}
+
+	async function endSensorSession() {
+		if (!activeSensorSessionId || !supabase) {
+			return;
+		}
+
+		const endedAt = new Date().toISOString();
+		const startedAt = activeSessionStartedAt ?? endedAt;
+		const durationSeconds = Math.max(
+			0,
+			Math.round((new Date(endedAt).getTime() - new Date(startedAt).getTime()) / 1000)
+		);
+		const sampleCount = liveSessionSampleCount;
+		const avgHeartRate =
+			sampleCount > 0 ? Number((liveSessionHeartRateTotal / sampleCount).toFixed(2)) : null;
+		const avgRrMs = liveSessionRrCount > 0 ? Number((liveSessionRrTotal / liveSessionRrCount).toFixed(2)) : null;
+		const rrVariabilityMs =
+			liveSessionRrDiffCount > 0
+				? Number(Math.sqrt(liveSessionSquaredDiffTotal / liveSessionRrDiffCount).toFixed(2))
+				: null;
+		const summary: SessionSummary = {
+			sessionId: activeSensorSessionId,
+			startedAt,
+			endedAt,
+			durationSeconds,
+			sampleCount,
+			averageHeartRate: avgHeartRate,
+			averageRrMs: avgRrMs,
+			rrVariabilityMs,
+			averageHrvMs: liveSessionAvgHrvMs,
+			maxHeartRate: liveSessionMaxHeartRate,
+			lastHeartRate: heartRate ?? null,
+			lastRrMs: rrMs ?? null,
+			lastHrvMs: hrvMs ?? null
+		};
+
+		const { data, error } = await supabase
+			.from('sensor_sessions')
+			.update({
+				ended_at: endedAt,
+				duration_seconds: durationSeconds,
+				avg_heart_rate: avgHeartRate,
+				avg_rr_ms: avgRrMs,
+				rr_variability_ms: rrVariabilityMs,
+				avg_hrv_ms: liveSessionAvgHrvMs,
+				last_hrv_ms: hrvMs ?? null,
+				max_heart_rate: liveSessionMaxHeartRate,
+				sample_count: sampleCount,
+				session_summary: summary
+			})
+			.eq('id', activeSensorSessionId)
+			.select(
+				'id, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, rr_variability_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, session_summary'
+			)
+			.single();
+
+		if (error) {
+			sensorPersistenceStatus = describeError(error, 'Failed to finalize sensor session.');
+			return;
+		}
+
+		if (data) {
+			lastSavedSensorSession = data as SavedSensorSession;
+			sensorPersistenceStatus = `Sensor session saved with ${data.sample_count} sample${data.sample_count === 1 ? '' : 's'}.`;
+		}
+
+		activeSensorSessionId = null;
+		activeSessionStartedAt = null;
+		resetLiveSensorSessionStats();
+	}
+
+	async function handleEndSession() {
+		if (isEndingSession || !activeSensorSessionId) {
+			return;
+		}
+
+		isEndingSession = true;
+		try {
+			await endSensorSession();
+		} finally {
+			isEndingSession = false;
+		}
 	}
 
 	async function connectSensor() {
@@ -79,14 +374,13 @@
 
 		try {
 			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
+				queueSensorReading(reading);
 			});
 
 			isSensorConnected = true;
 			sensorStatus = 'Connected to heart rate monitor';
 		} catch (error) {
-			sensorStatus = error instanceof Error ? error.message : 'Could not connect to sensor';
+			sensorStatus = describeError(error, 'Could not connect to sensor');
 		} finally {
 			isConnecting = false;
 		}
@@ -100,15 +394,16 @@
 		await stopSensor();
 		stopSensor = null;
 		isSensorConnected = false;
-		sensorStatus = 'Disconnected';
+		sensorStatus = activeSensorSessionId
+			? 'Disconnected. Session is still active until you end it.'
+			: 'Disconnected';
 	}
 
 	function simulateSpike() {
 		const randomHr = 95 + Math.floor(Math.random() * 26);
 		const randomRr = 520 + Math.floor(Math.random() * 120);
 
-		heartRate = randomHr;
-		rrMs = randomRr;
+		queueSensorReading({ heartRate: randomHr, rrMs: randomRr });
 		sensorStatus = 'Simulated stress signal loaded';
 	}
 
@@ -124,7 +419,15 @@
 		isSubmitting = true;
 
 		try {
+			const sessionElapsedSeconds = activeSessionStartedAt
+				? Math.max(
+						0,
+						Math.round((Date.now() - new Date(activeSessionStartedAt).getTime()) / 1000)
+					)
+				: null;
+
 			const checkInPayload = {
+				sensor_session_id: activeSensorSessionId,
 				mood,
 				workload,
 				sleep_quality: sleepQuality,
@@ -132,13 +435,17 @@
 				stress_level: stressLevel,
 				heart_rate: heartRate,
 				rr_ms: rrMs,
+				hrv_ms: hrvMs ?? null,
+				session_elapsed_seconds: sessionElapsedSeconds,
 				stressor: stressor.trim() || null
 			};
 
 			const { data: savedCheckIn, error: checkInError } = await supabase
 				.from('check_ins')
 				.insert(checkInPayload)
-				.select('id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor')
+				.select(
+					'id, created_at, sensor_session_id, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, hrv_ms, session_elapsed_seconds, stressor'
+				)
 				.single();
 
 			if (checkInError) {
@@ -153,6 +460,8 @@
 
 			if (stressLevel === 'rising' || stressLevel === 'high') {
 				const { error: interventionError } = await supabase.from('interventions').insert({
+					sensor_session_id: savedCheckIn.sensor_session_id,
+					check_in_id: savedCheckIn.id,
 					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
 					trigger_level: stressLevel,
 					notes: intervention
@@ -165,7 +474,7 @@
 
 			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
 		} catch (error) {
-			submitStatus = error instanceof Error ? error.message : 'Failed to save check-in';
+			submitStatus = describeError(error, 'Failed to save check-in');
 		} finally {
 			isSubmitting = false;
 		}
@@ -207,7 +516,7 @@
 			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			geminiStatus = payload?.warning ?? 'AI intervention generated.';
 		} catch (error) {
-			geminiStatus = error instanceof Error ? error.message : 'Failed to generate plan.';
+			geminiStatus = describeError(error, 'Failed to generate plan.');
 		} finally {
 			isGeneratingPlan = false;
 		}
@@ -270,7 +579,7 @@
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			helperStatus = payload?.warning ?? 'Kelp replied.';
 		} catch (error) {
-			helperStatus = error instanceof Error ? error.message : 'Failed to ask helper.';
+			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
 			isAskingHelper = false;
 		}
@@ -304,17 +613,87 @@
 					<span class="label">RR interval</span>
 					<strong>{rrMs ?? '--'} ms</strong>
 				</div>
+				<div>
+					<span class="label">HRV (RMSSD)</span>
+					<strong>{hrvMs ?? '--'} ms</strong>
+				</div>
 			</div>
 
 			<div class="actions">
 				<button onclick={connectSensor} disabled={!canUseBluetooth || isConnecting || isSensorConnected}>
 					{isConnecting ? 'Connecting...' : 'Connect Polar H10'}
 				</button>
-				<button class="ghost" onclick={disconnectSensor} disabled={!isSensorConnected}>
-					Disconnect
-				</button>
-				<button class="ghost" onclick={simulateSpike}>Simulate Spike</button>
+				{#if activeSensorSessionId}
+					<button class="ghost" onclick={disconnectSensor} disabled={!isSensorConnected}>
+						Disconnect
+					</button>
+					<button class="ghost" onclick={simulateSpike}>Simulate Spike</button>
+				{/if}
 			</div>
+
+			<div class="actions session-actions">
+				{#if isSensorConnected && !activeSensorSessionId}
+					<button onclick={handleStartSession} disabled={isStartingSession || !hasSupabaseConfig}>
+						{isStartingSession ? 'Starting Session...' : 'Start Session'}
+					</button>
+				{/if}
+				{#if activeSensorSessionId}
+					<button class="ghost" onclick={handleEndSession} disabled={isEndingSession}>
+						{isEndingSession ? 'Ending Session...' : 'End Session'}
+					</button>
+				{/if}
+			</div>
+
+			{#if sensorPersistenceStatus}
+				<p class="status">{sensorPersistenceStatus}</p>
+			{/if}
+
+			{#if activeSensorSessionId}
+				<div class="saved-preview">
+					<p class="label">Active sensor session</p>
+					<p class="saved-row">
+						<strong>{activeSensorSessionId.slice(0, 8)}...</strong>
+						<span>{liveSessionSampleCount} samples</span>
+						<span>Avg {liveSessionAvgHeartRate ?? '--'} bpm</span>
+						<span>Peak {liveSessionMaxHeartRate ?? '--'} bpm</span>
+					</p>
+					<p class="muted saved-meta">
+						Started {activeSessionStartedAt ? new Date(activeSessionStartedAt).toLocaleString() : '--'}.
+					</p>
+					<p class="muted saved-meta">
+						Average RR {liveSessionAvgRrMs ?? '--'} ms. HRV {liveSessionAvgHrvMs ?? '--'} ms. Variability {liveSessionRrVariabilityMs ?? '--'} ms.
+					</p>
+				</div>
+			{:else if lastSavedSensorSession}
+				<div class="saved-preview">
+					<p class="label">Last saved sensor session</p>
+					<p class="saved-row">
+						<strong>{lastSavedSensorSession.id.slice(0, 8)}...</strong>
+						<span>{lastSavedSensorSession.sample_count} samples</span>
+						<span>Avg {lastSavedSensorSession.avg_heart_rate ?? '--'} bpm</span>
+						<span>Avg RR {lastSavedSensorSession.avg_rr_ms ?? '--'} ms</span>
+						<span>Var {lastSavedSensorSession.rr_variability_ms ?? '--'} ms</span>
+						<span>Peak {lastSavedSensorSession.max_heart_rate ?? '--'} bpm</span>
+					</p>
+					<p class="muted saved-meta">
+						Started {new Date(lastSavedSensorSession.started_at).toLocaleString()}
+						{#if lastSavedSensorSession.ended_at}
+							. Ended {new Date(lastSavedSensorSession.ended_at).toLocaleString()}
+						{/if}
+					</p>
+					<p class="muted saved-meta">
+						Duration {lastSavedSensorSession.duration_seconds ?? '--'}s. Avg HRV {lastSavedSensorSession.avg_hrv_ms ?? '--'} ms. Last HRV {lastSavedSensorSession.last_hrv_ms ?? '--'} ms.
+					</p>
+					{#if lastSavedSensorSession.session_summary}
+						<p class="muted saved-meta">
+							Avg HRV {lastSavedSensorSession.session_summary.averageHrvMs ?? '--'} ms. Last HRV {lastSavedSensorSession.session_summary.lastHrvMs ?? '--'} ms.
+						</p>
+					{/if}
+					{#if lastSavedSensorSession.session_summary}
+						<pre class="ai-plan session-json">{JSON.stringify(lastSavedSensorSession.session_summary, null, 2)}</pre>
+					{/if}
+				</div>
+			{/if}
 
 			{#if !canUseBluetooth}
 				<p class="hint">Use Chrome or Edge over HTTPS/localhost for Web Bluetooth.</p>
@@ -367,7 +746,13 @@
 						<span>Sleep {lastSavedCheckIn.sleep_quality}</span>
 					</p>
 					<p class="muted saved-meta">
-						Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm and RR {lastSavedCheckIn.rr_ms ?? '--'} ms.
+						Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm, RR {lastSavedCheckIn.rr_ms ?? '--'} ms, and HRV {lastSavedCheckIn.hrv_ms ?? '--'} ms.
+					</p>
+					<p class="muted saved-meta">
+						Sensor session: {lastSavedCheckIn.sensor_session_id ? `${lastSavedCheckIn.sensor_session_id.slice(0, 8)}...` : 'Not attached'}
+					</p>
+					<p class="muted saved-meta">
+						Session elapsed: {lastSavedCheckIn.session_elapsed_seconds ?? '--'}s
 					</p>
 					{#if lastSavedCheckIn.stressor}
 						<p class="muted saved-meta">Stressor: {lastSavedCheckIn.stressor}</p>
@@ -593,6 +978,10 @@
 		gap: 0.5rem;
 	}
 
+	.session-actions {
+		margin-top: 0.75rem;
+	}
+
 	label {
 		display: grid;
 		gap: 0.4rem;
@@ -736,6 +1125,12 @@
 
 	.ai-plan-helper {
 		max-height: 30rem;
+	}
+
+	.session-json {
+		margin-top: 0.75rem;
+		max-height: 220px;
+		font-size: 0.8rem;
 	}
 
 	.ai-surface {
