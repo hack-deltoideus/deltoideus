@@ -12,8 +12,16 @@ create table if not exists public.sensor_sessions (
   last_hrv_ms numeric(7,2),
   max_heart_rate integer,
   sample_count integer not null default 0,
+  device_name text,
+  capture_type text,
+  raw_data_path text,
+  summary_payload jsonb,
   session_summary jsonb
 );
+
+insert into storage.buckets (id, name, public)
+values ('diagnostic-raw', 'diagnostic-raw', false)
+on conflict (id) do nothing;
 
 create table if not exists public.check_ins (
   id uuid primary key default gen_random_uuid(),
@@ -60,6 +68,9 @@ create index if not exists interventions_user_id_idx
 
 create index if not exists sensor_sessions_user_id_idx
   on public.sensor_sessions(user_id);
+
+create index if not exists sensor_sessions_raw_data_path_idx
+  on public.sensor_sessions(raw_data_path);
 
 alter table public.check_ins enable row level security;
 alter table public.sensor_sessions enable row level security;
@@ -114,3 +125,34 @@ create policy "Users can read own interventions"
   on public.interventions for select
   to authenticated
   using (auth.uid() = user_id);
+
+drop policy if exists "Users can upload own diagnostic raw data" on storage.objects;
+create policy "Users can upload own diagnostic raw data"
+  on storage.objects for insert
+  to authenticated
+  with check (
+    bucket_id = 'diagnostic-raw'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can read own diagnostic raw data" on storage.objects;
+create policy "Users can read own diagnostic raw data"
+  on storage.objects for select
+  to authenticated
+  using (
+    bucket_id = 'diagnostic-raw'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can update own diagnostic raw data" on storage.objects;
+create policy "Users can update own diagnostic raw data"
+  on storage.objects for update
+  to authenticated
+  using (
+    bucket_id = 'diagnostic-raw'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  )
+  with check (
+    bucket_id = 'diagnostic-raw'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
