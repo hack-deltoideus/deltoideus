@@ -276,7 +276,7 @@
 		width: 2rem;
 		height: 2rem;
 		border-radius: 999px;
-		background: linear-gradient(180deg, #6ef0e2 0%, var(--primary, #00675c) 100%);
+		background: linear-gradient(180deg, var(--primary-glow, #6ef0e2) 0%, var(--primary, #00675c) 100%);
 		color: white;
 		font-weight: 800;
 	}
