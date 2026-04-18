@@ -297,10 +297,10 @@
 					</div>
 				{/if}
 
-				{#if helperReply}
-					<div class="chat-bubble">
-						<p class="chat-author">Latest Reply</p>
-						<p>{helperReply}</p>
+				{#if isAskingHelper}
+					<div class="chat-bubble chat-bubble-status">
+						<p class="chat-author">Kelp</p>
+						<p>Thinking through this...</p>
 					</div>
 				{/if}
 			</div>
@@ -351,27 +351,27 @@
 
 <style>
 	:global(:root) {
-		--background: #f4f6ff;
-		--surface: #f4f6ff;
+		--background: #f7f8fc;
+		--surface: #f7f8fc;
 		--surface-container-lowest: #ffffff;
-		--surface-container: #dce9ff;
-		--on-surface: #212f42;
-		--on-surface-variant: #4e5c71;
-		--primary: #00675c;
+		--surface-container: #e4ebf8;
+		--on-surface: #20314b;
+		--on-surface-variant: #5b6b84;
+		--primary: #0a766a;
 		--on-primary: #c1fff2;
-		--secondary-container: #b7d3ff;
-		--field-bg: rgba(255, 255, 255, 0.88);
-		--field-border: rgba(160, 174, 197, 0.38);
-		--chat-shell-bg: rgba(255, 255, 255, 0.58);
+		--secondary-container: #d7e4fb;
+		--field-bg: rgba(255, 255, 255, 0.92);
+		--field-border: rgba(180, 194, 216, 0.5);
+		--chat-shell-bg: rgba(248, 250, 255, 0.82);
 		--chat-bubble-bg: white;
 		--prompt-chip-bg: white;
-		--panel-bg: rgba(255, 255, 255, 0.76);
-		--panel-border: rgba(160, 174, 197, 0.3);
-		--body-overlay-a: rgba(91, 244, 222, 0.36);
-		--body-overlay-b: rgba(183, 211, 255, 0.9);
-		--body-top: #f8fbff;
-		--body-bottom: #edf4ff;
-		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
+		--panel-bg: rgba(255, 255, 255, 0.88);
+		--panel-border: rgba(180, 194, 216, 0.45);
+		--body-overlay-a: rgba(64, 209, 182, 0.12);
+		--body-overlay-b: rgba(137, 174, 235, 0.2);
+		--body-top: #fbfcff;
+		--body-bottom: #eef3fb;
+		--shadow-soft: 0 16px 36px rgba(31, 47, 82, 0.08);
 	}
 
 	:global(:root[data-theme='dark']) {
@@ -424,7 +424,7 @@
 	.coach-shell {
 		max-width: 84rem;
 		margin: 0 auto;
-		padding: 1rem 1.5rem 2rem;
+		padding: 1.25rem 1.5rem 3.2rem;
 	}
 
 	.auth-shell {
@@ -437,7 +437,7 @@
 	.coach-panel {
 		background: var(--panel-bg);
 		border: 1px solid var(--panel-border);
-		border-radius: 2rem;
+		border-radius: 1.75rem;
 		box-shadow: var(--shadow-soft);
 		backdrop-filter: blur(18px);
 	}
@@ -460,10 +460,11 @@
 	.auth-card h1,
 	.coach-hero h1 {
 		margin: 0;
-		font-size: clamp(2.4rem, 5vw, 4.4rem);
-		line-height: 0.96;
+		font-size: clamp(2.8rem, 5.8vw, 4.6rem);
+		line-height: 0.98;
 		letter-spacing: -0.05em;
 		color: var(--primary);
+		max-width: 12ch;
 	}
 
 	.auth-copy,
@@ -475,9 +476,10 @@
 
 	.auth-copy,
 	.hero-copy {
-		margin-top: 0.8rem;
-		font-size: 1.05rem;
-		line-height: 1.6;
+		margin-top: 0.95rem;
+		font-size: 1.1rem;
+		line-height: 1.68;
+		max-width: 40rem;
 	}
 
 	.auth-actions,
@@ -507,7 +509,7 @@
 		align-items: center;
 		justify-content: center;
 		gap: 0.55rem;
-		padding: 0.9rem 1.1rem;
+		padding: 0.92rem 1.16rem;
 		border-radius: 1rem;
 		text-decoration: none;
 		cursor: pointer;
@@ -525,25 +527,26 @@
 		display: flex;
 		align-items: end;
 		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.5rem 0.2rem 1.1rem;
+		gap: 1.4rem;
+		padding: 0.8rem 0.1rem 1.35rem;
 	}
 
 	.coach-panel {
 		display: grid;
 		grid-template-rows: auto minmax(0, 1fr) auto;
-		gap: 1rem;
-		min-height: calc(100vh - 15rem);
-		padding: 1.5rem;
+		gap: 1.15rem;
+		min-height: calc(100vh - 16rem);
+		padding: 1.55rem;
 	}
 
 	.coach-header h2 {
 		margin: 0;
-		font-size: 2rem;
+		font-size: clamp(2rem, 3vw, 2.5rem);
+		line-height: 1.05;
 	}
 
 	.coach-subtitle {
-		margin: 0.35rem 0 0;
+		margin: 0.45rem 0 0;
 	}
 
 	.persona-select select,
@@ -559,31 +562,36 @@
 	.chat-shell {
 		display: flex;
 		flex-direction: column;
-		gap: 0.8rem;
-		padding: 1rem 1rem 1.25rem;
+		gap: 0.9rem;
+		padding: 1.15rem;
 		border-radius: 1.6rem;
 		background: var(--chat-shell-bg);
-		min-height: 0;
+		min-height: 18rem;
+		max-height: 30rem;
 		overflow-y: auto;
 		scrollbar-gutter: stable;
 	}
 
 	.chat-bubble {
 		max-width: 85%;
-		padding: 0.95rem 1rem;
+		padding: 1rem 1.05rem;
 		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
 		background: var(--chat-bubble-bg);
-		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
+		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.06);
 	}
 
 	.chat-bubble-intro {
 		max-width: 100%;
 	}
 
+	.chat-bubble-status {
+		opacity: 0.84;
+	}
+
 	.chat-user {
 		margin-left: auto;
 		border-radius: 1.2rem 1.2rem 0.4rem 1.2rem;
-		background: linear-gradient(135deg, rgba(0, 103, 92, 0.12), rgba(91, 244, 222, 0.28));
+		background: linear-gradient(135deg, rgba(10, 118, 106, 0.12), rgba(64, 209, 182, 0.22));
 	}
 
 	.chat-bubble p:last-child {
@@ -593,10 +601,10 @@
 
 	.helper-composer {
 		display: grid;
-		gap: 0.8rem;
-		padding: 1rem;
+		gap: 0.9rem;
+		padding: 1.1rem;
 		border-radius: 1.6rem;
-		background: color-mix(in srgb, var(--surface, #ffffff) 86%, transparent);
+		background: color-mix(in srgb, var(--surface, #ffffff) 92%, transparent);
 		border: 1px solid var(--field-border);
 		backdrop-filter: blur(16px);
 	}
@@ -605,7 +613,7 @@
 		display: flex;
 		gap: 0.65rem;
 		overflow-x: auto;
-		padding-bottom: 0.2rem;
+		padding-bottom: 0.15rem;
 		scrollbar-width: none;
 	}
 
@@ -615,7 +623,7 @@
 
 	.prompt-chip {
 		flex: 0 0 auto;
-		padding: 0.7rem 0.95rem;
+		padding: 0.72rem 0.98rem;
 		border-radius: 999px;
 		background: var(--prompt-chip-bg);
 		color: var(--primary);
@@ -630,7 +638,7 @@
 	}
 
 	.message-input {
-		min-height: 5.75rem;
+		min-height: 5rem;
 		padding: 1rem 4.2rem 1rem 1rem;
 		border-radius: 1.35rem;
 		line-height: 1.55;
@@ -649,6 +657,7 @@
 		background: var(--primary);
 		color: white;
 		cursor: pointer;
+		box-shadow: 0 10px 18px rgba(10, 118, 106, 0.22);
 	}
 
 	.composer-hint,
@@ -705,6 +714,10 @@
 		.coach-hero {
 			flex-direction: column;
 			align-items: start;
+		}
+
+		.coach-hero h1 {
+			max-width: none;
 		}
 
 		.coach-panel {

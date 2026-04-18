@@ -28,21 +28,21 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.85rem;
-		margin: 1.25rem 0 0;
+		margin: 1.35rem 0 0;
 	}
 
 	.section-link {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.55rem;
-		padding: 0.8rem 1rem;
+		padding: 0.82rem 1.08rem;
 		border-radius: 999px;
 		text-decoration: none;
 		font-weight: 700;
 		color: var(--on-surface, #212f42);
-		background: color-mix(in srgb, var(--surface-container, #dce9ff) 72%, white);
-		border: 1px solid color-mix(in srgb, var(--outline-variant, #a0aec5) 62%, transparent);
-		box-shadow: 0 10px 24px rgba(31, 47, 82, 0.08);
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 62%, white);
+		border: 1px solid color-mix(in srgb, var(--outline-variant, #a0aec5) 58%, transparent);
+		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.05);
 		transition:
 			transform 0.18s ease,
 			background 0.18s ease,
@@ -57,6 +57,7 @@
 		background: var(--primary, #00675c);
 		color: var(--on-primary, #c1fff2);
 		border-color: transparent;
+		box-shadow: 0 12px 28px rgba(10, 118, 106, 0.22);
 	}
 
 	@media (max-width: 640px) {
