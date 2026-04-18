@@ -5,6 +5,7 @@
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
+	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
@@ -18,61 +19,7 @@
 		stress_level: StressLevel;
 		heart_rate: number | null;
 		rr_ms: number | null;
-		hrv_ms: number | null;
 		stressor: string | null;
-	};
-
-	type DiagnosticSample = {
-		recorded_at: string;
-		elapsed_ms: number;
-		heart_rate: number;
-		rr_ms: number | null;
-		hrv_ms: number | null;
-	};
-
-	type SavedDiagnosticSession = {
-		id: string;
-		created_at: string;
-		started_at: string;
-		ended_at: string | null;
-		duration_seconds: number | null;
-		avg_heart_rate: number | null;
-		avg_rr_ms: number | null;
-		avg_hrv_ms: number | null;
-		last_hrv_ms: number | null;
-		max_heart_rate: number | null;
-		sample_count: number;
-		device_name: string | null;
-		capture_type: string | null;
-		raw_data_path: string | null;
-		summary_payload: {
-			sessionId: string;
-			userId: string;
-			deviceInfo: {
-				name: string;
-			} | null;
-			captureType: string;
-			startedAt: string;
-			endedAt: string;
-			durationSeconds: number;
-			sampleCount: number;
-			averageHeartRate: number | null;
-			averageRrMs: number | null;
-			averageHrvMs: number | null;
-			lastHrvMs: number | null;
-			maxHeartRate: number | null;
-			segmentLengthSeconds: number;
-			segments: Array<{
-				index: number;
-				startedAt: string;
-				endedAt: string;
-				durationSeconds: number;
-				sampleCount: number;
-				averageHeartRate: number | null;
-				averageRrMs: number | null;
-				averageHrvMs: number | null;
-			}>;
-		} | null;
 	};
 
 	type SupabaseLikeError = {
@@ -82,7 +29,7 @@
 		code?: string;
 	};
 
-type OAuthProvider = 'google';
+	type OAuthProvider = 'google' | 'github';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -91,7 +38,6 @@ type OAuthProvider = 'google';
 
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
-	let hrvMs = $state<number | undefined>(undefined);
 	let baselineHeartRate = $state(65);
 
 	const stressResult = $derived(
@@ -116,13 +62,11 @@ type OAuthProvider = 'google';
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let isSigningOut = $state(false);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
 	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
-	let helperReply = $state('');
+	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
 	let helperSource = $state<'gemini' | 'fallback' | ''>('');
@@ -133,10 +77,6 @@ type OAuthProvider = 'google';
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
-	let sessionStartedAt = $state<string | null>(null);
-	let sessionDeviceName = $state<string | null>(null);
-	let sessionSamples = $state<DiagnosticSample[]>([]);
-	let lastSavedDiagnosticSession = $state<SavedDiagnosticSession | null>(null);
 
 	let stopSensor = $state<(() => Promise<void>) | null>(null);
 
@@ -154,7 +94,6 @@ type OAuthProvider = 'google';
 	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
-	const profileCopy = $derived(currentUser?.email ?? 'Ready for your check-in?');
 
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
@@ -236,78 +175,6 @@ type OAuthProvider = 'google';
 		return 'Friend';
 	}
 
-	function averageOf(values: number[]): number | null {
-		if (values.length === 0) {
-			return null;
-		}
-
-		return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
-	}
-
-	function chooseSegmentLengthSeconds(durationSeconds: number): number {
-		return durationSeconds < 20 * 60 ? 60 : 300;
-	}
-
-	function buildSessionSegments(
-		samples: DiagnosticSample[],
-		startedAt: string,
-		durationSeconds: number
-	): Array<{
-		index: number;
-		startedAt: string;
-		endedAt: string;
-		durationSeconds: number;
-		sampleCount: number;
-		averageHeartRate: number | null;
-		averageRrMs: number | null;
-		averageHrvMs: number | null;
-	}> {
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const segmentBuckets = new Map<number, DiagnosticSample[]>();
-
-		for (const sample of samples) {
-			const segmentIndex = Math.floor(sample.elapsed_ms / (segmentLengthSeconds * 1000));
-			const existing = segmentBuckets.get(segmentIndex) ?? [];
-			existing.push(sample);
-			segmentBuckets.set(segmentIndex, existing);
-		}
-
-		return Array.from(segmentBuckets.entries())
-			.sort(([left], [right]) => left - right)
-			.map(([segmentIndex, bucket]) => {
-				const segmentStartedMs = new Date(startedAt).getTime() + segmentIndex * segmentLengthSeconds * 1000;
-				const heartRates = bucket.map((sample) => sample.heart_rate);
-				const rrValues = bucket
-					.map((sample) => sample.rr_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const hrvValues = bucket
-					.map((sample) => sample.hrv_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const endedAtMs = bucket.at(-1)
-					? new Date(startedAt).getTime() + (bucket.at(-1)?.elapsed_ms ?? 0)
-					: segmentStartedMs;
-
-				return {
-					index: segmentIndex + 1,
-					startedAt: new Date(segmentStartedMs).toISOString(),
-					endedAt: new Date(endedAtMs).toISOString(),
-					durationSeconds: Math.max(1, Math.round((endedAtMs - segmentStartedMs) / 1000)),
-					sampleCount: bucket.length,
-					averageHeartRate: averageOf(heartRates),
-					averageRrMs: averageOf(rrValues),
-					averageHrvMs: averageOf(hrvValues)
-				};
-			});
-	}
-
-	function elapsedSecondsSince(startedAt: string | null): number | null {
-		if (!startedAt) {
-			return null;
-		}
-
-		return Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
-	}
-
 	async function signInWithProvider(provider: OAuthProvider) {
 		if (!supabase || !browser || isSigningIn) {
 			return;
@@ -334,31 +201,6 @@ type OAuthProvider = 'google';
 		}
 	}
 
-	async function signOut() {
-		if (!supabase || isSigningOut) {
-			return;
-		}
-
-		isSigningOut = true;
-		authStatus = '';
-
-		try {
-			const { error } = await supabase.auth.signOut();
-			if (error) {
-				throw error;
-			}
-
-			currentSession = null;
-			currentUser = null;
-			submitStatus = '';
-			lastSavedCheckIn = null;
-		} catch (error) {
-			authStatus = describeError(error, 'Failed to sign out.');
-		} finally {
-			isSigningOut = false;
-		}
-	}
-
 	async function connectSensor() {
 		if (!canUseBluetooth || isConnecting) {
 			return;
@@ -368,36 +210,14 @@ type OAuthProvider = 'google';
 		sensorStatus = 'Connecting...';
 
 		try {
-			const startedAt = new Date().toISOString();
-			sessionStartedAt = startedAt;
-			sessionSamples = [];
-			lastSavedDiagnosticSession = null;
-
 			stopSensor = await connectHeartRateMonitor((reading) => {
 				heartRate = reading.heartRate;
 				rrMs = reading.rrMs;
-				hrvMs = reading.hrvMs;
-
-				const recordedAt = new Date().toISOString();
-				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
-				sessionSamples = [
-					...sessionSamples,
-					{
-						recorded_at: recordedAt,
-						elapsed_ms: elapsedMs,
-						heart_rate: reading.heartRate,
-						rr_ms: reading.rrMs ?? null,
-						hrv_ms: reading.hrvMs ?? null
-					}
-				].slice(-600);
 			});
 
-			sessionDeviceName = 'Polar H9';
 			isSensorConnected = true;
 			sensorStatus = 'Connected to heart rate monitor';
 		} catch (error) {
-			sessionStartedAt = null;
-			sessionSamples = [];
 			sensorStatus = describeError(error, 'Could not connect to sensor');
 		} finally {
 			isConnecting = false;
@@ -412,157 +232,15 @@ type OAuthProvider = 'google';
 		await stopSensor();
 		stopSensor = null;
 		isSensorConnected = false;
-
-		if (!supabase) {
-			sensorStatus = 'Disconnected. Supabase is not configured, so diagnostics were not saved.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		if (!currentUser) {
-			sensorStatus = 'Disconnected. Sign in to save diagnostics.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		const endedAt = new Date().toISOString();
-		const durationSeconds = sessionStartedAt
-			? Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(sessionStartedAt).getTime()) / 1000))
-			: 0;
-		const heartRates = sessionSamples.map((sample) => sample.heart_rate);
-		const rrValues = sessionSamples
-			.map((sample) => sample.rr_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const hrvValues = sessionSamples
-			.map((sample) => sample.hrv_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const sessionId = crypto.randomUUID();
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const summaryPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			averageHeartRate: averageOf(heartRates),
-			averageRrMs: averageOf(rrValues),
-			averageHrvMs: averageOf(hrvValues),
-			lastHrvMs: hrvValues.at(-1) ?? null,
-			maxHeartRate: heartRates.length > 0 ? Math.max(...heartRates) : null,
-			segmentLengthSeconds,
-			segments: buildSessionSegments(sessionSamples, sessionStartedAt ?? endedAt, durationSeconds)
-		};
-		const rawPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			readings: sessionSamples
-		};
-		const rawDataPath = `${currentUser.id}/${sessionId}.json`;
-
-		try {
-			const { error: uploadError } = await supabase.storage
-				.from('diagnostic-raw')
-				.upload(rawDataPath, JSON.stringify(rawPayload, null, 2), {
-					contentType: 'application/json',
-					upsert: true
-				});
-
-			if (uploadError) {
-				throw uploadError;
-			}
-
-			const { data, error } = await supabase
-				.from('sensor_sessions')
-				.insert({
-					id: sessionId,
-					user_id: currentUser.id,
-					started_at: sessionStartedAt ?? endedAt,
-					ended_at: endedAt,
-					duration_seconds: durationSeconds,
-					avg_heart_rate: summaryPayload.averageHeartRate,
-					avg_rr_ms: summaryPayload.averageRrMs,
-					avg_hrv_ms: summaryPayload.averageHrvMs,
-					last_hrv_ms: summaryPayload.lastHrvMs,
-					max_heart_rate: summaryPayload.maxHeartRate,
-					sample_count: summaryPayload.sampleCount,
-					device_name: summaryPayload.deviceInfo?.name ?? null,
-					capture_type: summaryPayload.captureType,
-					raw_data_path: rawDataPath,
-					summary_payload: summaryPayload,
-					session_summary: {
-						startedAt: summaryPayload.startedAt,
-						endedAt: summaryPayload.endedAt,
-						durationSeconds: summaryPayload.durationSeconds,
-						sampleCount: summaryPayload.sampleCount,
-						averageHeartRate: summaryPayload.averageHeartRate,
-						averageRrMs: summaryPayload.averageRrMs,
-						averageHrvMs: summaryPayload.averageHrvMs,
-						lastHrvMs: summaryPayload.lastHrvMs,
-						maxHeartRate: summaryPayload.maxHeartRate,
-						segmentLengthSeconds: summaryPayload.segmentLengthSeconds
-					}
-				})
-				.select(
-					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, device_name, capture_type, raw_data_path, summary_payload'
-				)
-				.single();
-
-			if (error) {
-				throw error;
-			}
-
-			lastSavedDiagnosticSession = data as SavedDiagnosticSession;
-			sensorStatus = `Disconnected. Diagnostic session saved (${data.id.slice(0, 8)}...).`;
-		} catch (error) {
-			sensorStatus = describeError(error, 'Disconnected, but failed to save diagnostics.');
-		} finally {
-			sessionStartedAt = null;
-			sessionSamples = [];
-		}
+		sensorStatus = 'Disconnected';
 	}
 
 	function simulateSpike() {
 		const randomHr = 95 + Math.floor(Math.random() * 26);
 		const randomRr = 520 + Math.floor(Math.random() * 120);
-		const randomHrv = 18 + Math.floor(Math.random() * 28);
 
 		heartRate = randomHr;
 		rrMs = randomRr;
-		hrvMs = randomHrv;
-
-		if (sessionStartedAt) {
-			const recordedAt = new Date().toISOString();
-			const elapsedMs = Math.max(
-				0,
-				new Date(recordedAt).getTime() - new Date(sessionStartedAt).getTime()
-			);
-			sessionSamples = [
-				...sessionSamples,
-				{
-					recorded_at: recordedAt,
-					elapsed_ms: elapsedMs,
-					heart_rate: randomHr,
-					rr_ms: randomRr,
-					hrv_ms: randomHrv
-				}
-			].slice(-600);
-		}
-
 		sensorStatus = 'Simulated stress signal loaded';
 	}
 
@@ -584,7 +262,6 @@ type OAuthProvider = 'google';
 
 		try {
 			const checkInPayload = {
-				user_id: currentUser.id,
 				mood,
 				workload,
 				sleep_quality: sleepQuality,
@@ -592,8 +269,6 @@ type OAuthProvider = 'google';
 				stress_level: stressLevel,
 				heart_rate: heartRate,
 				rr_ms: rrMs,
-				hrv_ms: hrvMs,
-				session_elapsed_seconds: elapsedSecondsSince(sessionStartedAt),
 				stressor: stressor.trim() || null
 			};
 
@@ -601,7 +276,7 @@ type OAuthProvider = 'google';
 				.from('check_ins')
 				.insert(checkInPayload)
 				.select(
-					'id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, hrv_ms, stressor'
+					'id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor'
 				)
 				.single();
 
@@ -617,7 +292,6 @@ type OAuthProvider = 'google';
 
 			if (stressLevel === 'rising' || stressLevel === 'high') {
 				const { error: interventionError } = await supabase.from('interventions').insert({
-					user_id: currentUser.id,
 					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
 					trigger_level: stressLevel,
 					notes: intervention
@@ -680,7 +354,6 @@ type OAuthProvider = 'google';
 
 	async function askGeminiHelper() {
 		helperStatus = '';
-		helperReply = '';
 		helperSource = '';
 
 		const question = helperQuestion.trim();
@@ -721,16 +394,17 @@ type OAuthProvider = 'google';
 				throw new Error(payload?.error ?? 'Failed to get helper response');
 			}
 
-			helperReply = payload.reply ?? '';
-			if (!helperReply) {
+			const reply = payload.reply ?? '';
+			if (!reply) {
 				throw new Error('Kelp returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
 				...nextHistory,
-				{ role: 'assistant', text: helperReply }
+				{ role: 'assistant', text: reply }
 			];
 			helperHistory = updatedHistory.slice(-8);
+			helperQuestion = '';
 
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			helperStatus = payload?.warning ?? 'Kelp replied.';
@@ -751,16 +425,21 @@ type OAuthProvider = 'google';
 </svelte:head>
 
 {#if !currentUser}
-	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-hero">
 			<div class="auth-panel kit-panel">
 				<p class="brand-kicker">Sanctuary</p>
 				<h1>Sign in to enter your calm dashboard.</h1>
+				<p class="auth-lead">
+					Use the OAuth setup already connected to Supabase to open your personal space.
+				</p>
 
 				<div class="auth-actions">
 					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
 						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
+					</button>
+					<button class="button button-subtle" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+						{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
 					</button>
 				</div>
 
@@ -776,26 +455,19 @@ type OAuthProvider = 'google';
 	</main>
 {:else}
 <SiteNav />
+
 <main class="app-shell">
-	<header class="mobile-topbar kit-panel">
-		<div>
-			<p class="brand-kicker">Sanctuary</p>
-			<p class="brand-subtitle">Mental space</p>
-		</div>
-	</header>
 
 	<aside class="sidebar kit-panel">
 		<div class="sidebar-block">
-			<div class="sidebar-head">
-				<p class="brand-kicker">Sanctuary</p>
-			</div>
-			<h2 class="sidebar-title">Your calm command center</h2>
+			<!-- <p class="brand-kicker">Sanctuary</p> -->
+			<h2 class="sidebar-title">Command center</h2>
 
 			<div class="profile-card">
 				<div class="avatar">{avatarLetter}</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{displayName} · {profileCopy}</p>
+					<p class="profile-copy">{displayName} · {currentUser.email ?? 'Ready for your check-in?'}</p>
 				</div>
 			</div>
 		</div>
@@ -813,27 +485,19 @@ type OAuthProvider = 'google';
 				<span class="material-symbols-outlined">psychology</span>
 				<span>AI Coach</span>
 			</a>
-			<a class="nav-item" href="#sensor">
+			<a class="nav-item" href="/app/history">
 				<span class="material-symbols-outlined">history</span>
 				<span>History</span>
 			</a>
 		</nav>
 
-		<div class="sidebar-cta">
-			<button class="button button-tertiary" type="button" onclick={generateGeminiPlan}>
-				Start Daily Goal
-			</button>
-			<button class="button button-subtle signout-button" type="button" onclick={signOut} disabled={isSigningOut}>
-				{isSigningOut ? 'Signing out...' : 'Sign out'}
-			</button>
-		</div>
 	</aside>
 
 	<div class="main-column">
 		<section class="hero" id="dashboard">
 			<div>
-				<h1>Welcome back, {displayName}</h1>
-				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
+				<h1>Welcome back, Alex</h1>
+				<!-- <p class="hero-copy">Today is a beautiful day to nurture your mind.</p> -->
 			</div>
 
 			<div class="hero-streak kit-panel">
@@ -1004,10 +668,6 @@ type OAuthProvider = 'google';
 						<p class="metric-label">RR INTERVAL</p>
 						<p class="metric-value secondary">{rrMs ?? '--'} <span>MS</span></p>
 					</div>
-					<div class="metric-card">
-						<p class="metric-label">HRV</p>
-						<p class="metric-value secondary">{hrvMs ?? '--'} <span>MS</span></p>
-					</div>
 				</div>
 
 				<div class="stacked-actions">
@@ -1029,25 +689,6 @@ type OAuthProvider = 'google';
 				</div>
 
 				<p class="section-copy">{sensorStatus}</p>
-
-				{#if lastSavedDiagnosticSession}
-					<div class="saved-panel">
-						<p class="saved-title">Last diagnostic session</p>
-						<div class="saved-metrics">
-							<span>{lastSavedDiagnosticSession.capture_type ?? 'polar_h9_hr_hrv'}</span>
-							<span>{lastSavedDiagnosticSession.sample_count} samples</span>
-							<span>{lastSavedDiagnosticSession.duration_seconds ?? 0}s</span>
-							<span>Avg HR {lastSavedDiagnosticSession.avg_heart_rate ?? '--'}</span>
-							<span>Avg HRV {lastSavedDiagnosticSession.avg_hrv_ms ?? '--'}</span>
-						</div>
-						<p class="saved-copy">
-							Started {new Date(lastSavedDiagnosticSession.started_at).toLocaleString()} on {lastSavedDiagnosticSession.device_name ?? 'Polar H9'}.
-						</p>
-						<p class="saved-copy">
-							Summary JSON has {lastSavedDiagnosticSession.summary_payload?.segments.length ?? 0} segments and raw readings are stored at {lastSavedDiagnosticSession.raw_data_path ?? 'no path'}.
-						</p>
-					</div>
-				{/if}
 
 				{#if !canUseBluetooth}
 					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
@@ -1087,18 +728,9 @@ type OAuthProvider = 'google';
 							</div>
 						{/each}
 					{:else}
-						<div class="chat-bubble">
-							<p class="chat-author">Kelp</p>
-							<p>
-								Hello {displayName}! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
-							</p>
-						</div>
-					{/if}
-
-					{#if helperReply}
-						<div class="chat-bubble">
-							<p class="chat-author">Latest Reply</p>
-							<p>{helperReply}</p>
+						<div class="chat-empty-state">
+							<p class="chat-empty-title">No messages yet.</p>
+							<p class="chat-empty-copy">Send a question when you want a quick plan, perspective, or reset.</p>
 						</div>
 					{/if}
 				</div>
@@ -1165,7 +797,7 @@ type OAuthProvider = 'google';
 			<span class="material-symbols-outlined">psychology</span>
 			<span>Coach</span>
 		</a>
-		<a class="footer-item" href="#sensor">
+		<a class="footer-item" href="/app/history">
 			<span class="material-symbols-outlined">history</span>
 			<span>History</span>
 		</a>
@@ -1197,73 +829,31 @@ type OAuthProvider = 'google';
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
 		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
-		--body-overlay-a: rgba(91, 244, 222, 0.36);
-		--body-overlay-b: rgba(183, 211, 255, 0.9);
-		--body-top: #f8fbff;
-		--body-bottom: #edf4ff;
-		--panel-bg: rgba(255, 255, 255, 0.76);
-		--panel-border: rgba(160, 174, 197, 0.3);
-		--nav-hover-bg: rgba(201, 222, 255, 0.7);
-		--hero-streak-bg: rgba(211, 228, 255, 0.72);
-		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
-		--sensor-bg: rgba(255, 255, 255, 0.92);
-		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
-		--field-bg: rgba(255, 255, 255, 0.88);
-		--field-border: rgba(160, 174, 197, 0.38);
-		--slider-bg: rgba(255, 255, 255, 0.8);
-		--button-subtle-bg: rgba(201, 222, 255, 0.7);
-		--chat-shell-bg: rgba(255, 255, 255, 0.55);
-		--chat-bubble-bg: white;
-		--prompt-chip-bg: white;
-		--saved-panel-bg: rgba(211, 228, 255, 0.58);
-		--metric-card-bg: var(--surface-container);
-		--icon-bg: white;
 	}
 
 	:global(:root[data-theme='dark']) {
 		--background: #091521;
 		--surface-container-lowest: #0d1c2a;
-		--secondary: #7fc7ff;
-		--tertiary-container: #f2bf47;
-		--surface-container-high: #173044;
-		--error: #ff8990;
-		--surface-container-highest: #1d3c52;
+		--secondary: #8ac3ff;
+		--tertiary-container: #5e4600;
+		--surface-container-high: #173244;
+		--error: #ff8a95;
+		--surface-container-highest: #1f3d52;
 		--on-surface: #edf5ff;
-		--on-tertiary-container: #3c2b00;
-		--surface: #0b1723;
+		--on-tertiary-container: #fff0c4;
+		--surface: #091521;
 		--surface-container: #122636;
 		--surface-container-low: #0f2231;
 		--on-surface-variant: #bacbdd;
-		--primary-dim: #54d9c9;
-		--outline: #70879c;
+		--primary-dim: #49d7c9;
+		--outline: #6f8396;
 		--primary: #67efe0;
 		--on-primary: #073a35;
-		--primary-container: #197d73;
-		--on-secondary-container: #dcedff;
+		--primary-container: #103f3a;
+		--on-secondary-container: #d9ebff;
 		--secondary-container: #1b455f;
 		--outline-variant: #465a6c;
 		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
-		--body-overlay-a: rgba(91, 244, 222, 0.14);
-		--body-overlay-b: rgba(82, 120, 170, 0.18);
-		--body-top: #0d1a27;
-		--body-bottom: #07111a;
-		--panel-bg: rgba(11, 24, 36, 0.82);
-		--panel-border: rgba(92, 111, 127, 0.3);
-		--nav-hover-bg: rgba(31, 58, 80, 0.82);
-		--hero-streak-bg: rgba(18, 40, 58, 0.78);
-		--checkin-bg: linear-gradient(180deg, rgba(11, 24, 36, 0.96), rgba(15, 31, 44, 0.94));
-		--sensor-bg: rgba(11, 24, 36, 0.94);
-		--helper-bg: linear-gradient(180deg, rgba(18, 39, 55, 0.96), rgba(11, 24, 36, 0.94));
-		--field-bg: rgba(16, 33, 46, 0.96);
-		--field-border: rgba(81, 103, 121, 0.42);
-		--slider-bg: rgba(16, 33, 46, 0.96);
-		--button-subtle-bg: rgba(26, 52, 73, 0.9);
-		--chat-shell-bg: rgba(13, 28, 40, 0.72);
-		--chat-bubble-bg: rgba(16, 33, 46, 0.96);
-		--prompt-chip-bg: rgba(16, 33, 46, 0.96);
-		--saved-panel-bg: rgba(18, 39, 55, 0.88);
-		--metric-card-bg: rgba(18, 39, 55, 0.94);
-		--icon-bg: rgba(16, 33, 46, 0.96);
 	}
 
 	:global(html) {
@@ -1274,9 +864,9 @@ type OAuthProvider = 'google';
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, var(--body-overlay-a), transparent 32%),
-			radial-gradient(circle at top right, var(--body-overlay-b), transparent 30%),
-			linear-gradient(180deg, var(--body-top) 0%, var(--background) 40%, var(--body-bottom) 100%);
+			radial-gradient(circle at top left, rgba(91, 244, 222, 0.36), transparent 32%),
+			radial-gradient(circle at top right, rgba(183, 211, 255, 0.9), transparent 30%),
+			linear-gradient(180deg, #f8fbff 0%, var(--background) 40%, #edf4ff 100%);
 		color: var(--on-surface);
 	}
 
@@ -1306,14 +896,14 @@ type OAuthProvider = 'google';
 		grid-template-columns: 18rem minmax(0, 1fr);
 		gap: 1.5rem;
 		min-height: 100vh;
-		padding: 1rem 1.5rem 1.5rem;
+		padding: 1.25rem 1.5rem 1.5rem;
 	}
 
 	.auth-shell {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
-		padding: 1rem 1.5rem 1.5rem;
+		padding: 1.5rem;
 	}
 
 	.auth-hero {
@@ -1347,34 +937,25 @@ type OAuthProvider = 'google';
 	}
 
 	.kit-panel {
-		background: var(--panel-bg);
-		border: 1px solid var(--panel-border);
+		background: rgba(255, 255, 255, 0.76);
+		border: 1px solid rgba(160, 174, 197, 0.3);
 		border-radius: 2rem;
 		box-shadow: var(--shadow-soft);
 		backdrop-filter: blur(18px);
 	}
 
-	.mobile-topbar,
 	.mobile-footer {
 		display: none;
 	}
 
 	.sidebar {
 		position: sticky;
-		top: 1.5rem;
+		top: 6.65rem;
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
-		height: calc(100vh - 3rem);
+		height: calc(100vh - 8rem);
 		padding: 1.5rem;
-	}
-
-	.sidebar-head,
-	.mobile-actions {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
 	}
 
 	.brand-kicker,
@@ -1470,7 +1051,7 @@ type OAuthProvider = 'google';
 	.nav-item:hover,
 	.footer-item:hover {
 		transform: translateY(-1px);
-		background: var(--nav-hover-bg);
+		background: rgba(201, 222, 255, 0.7);
 		color: var(--on-surface);
 	}
 
@@ -1485,10 +1066,6 @@ type OAuthProvider = 'google';
 		margin-top: auto;
 		display: grid;
 		gap: 0.75rem;
-	}
-
-	.signout-button {
-		width: 100%;
 	}
 
 	.main-column {
@@ -1525,7 +1102,7 @@ type OAuthProvider = 'google';
 		gap: 1rem;
 		min-width: 15rem;
 		padding: 1rem 1.2rem;
-		background: var(--hero-streak-bg);
+		background: rgba(211, 228, 255, 0.72);
 	}
 
 	.hero-streak-icon,
@@ -1581,21 +1158,17 @@ type OAuthProvider = 'google';
 
 	.checkin-card {
 		grid-column: span 8;
-		background: var(--checkin-bg);
+		background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
 	}
 
 	.sensor-card {
 		grid-column: span 5;
-		background: var(--sensor-bg);
+		background: rgba(255, 255, 255, 0.92);
 	}
 
 	.helper-card {
 		grid-column: span 7;
-		background: var(--helper-bg);
-	}
-
-	.stress-card .meta-label {
-		color: #ffffff;
+		background: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
 	}
 
 	.card-topline,
@@ -1727,7 +1300,7 @@ type OAuthProvider = 'google';
 		padding: 1.1rem;
 		border-radius: 1.5rem;
 		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: var(--slider-bg);
+		background: rgba(255, 255, 255, 0.8);
 	}
 
 	.slider-title {
@@ -1765,12 +1338,12 @@ type OAuthProvider = 'google';
 	.persona-select select,
 	.message-input {
 		width: 100%;
-		border: 1px solid var(--field-border);
+		border: 1px solid rgba(160, 174, 197, 0.38);
 		border-radius: 1.15rem;
 		padding: 0.95rem 1rem;
 		font: inherit;
 		color: var(--on-surface);
-		background: var(--field-bg);
+		background: rgba(255, 255, 255, 0.88);
 	}
 
 	input[type='range'] {
@@ -1848,7 +1421,7 @@ type OAuthProvider = 'google';
 	}
 
 	.button-subtle {
-		background: var(--button-subtle-bg);
+		background: rgba(201, 222, 255, 0.7);
 		color: var(--on-surface);
 		box-shadow: none;
 	}
@@ -1864,7 +1437,7 @@ type OAuthProvider = 'google';
 		margin-top: 1rem;
 		padding: 1rem;
 		border-radius: 1.4rem;
-		background: var(--saved-panel-bg);
+		background: rgba(211, 228, 255, 0.58);
 		border: 1px solid rgba(160, 174, 197, 0.24);
 	}
 
@@ -1895,7 +1468,7 @@ type OAuthProvider = 'google';
 
 	.metric-card {
 		flex: 1;
-		background: var(--metric-card-bg);
+		background: var(--surface-container);
 	}
 
 	.metric-value {
@@ -1952,7 +1525,7 @@ type OAuthProvider = 'google';
 		padding: 1rem;
 		margin-top: 1rem;
 		border-radius: 1.6rem;
-		background: var(--chat-shell-bg);
+		background: rgba(255, 255, 255, 0.55);
 		min-height: 14rem;
 	}
 
@@ -1960,8 +1533,35 @@ type OAuthProvider = 'google';
 		max-width: 85%;
 		padding: 0.95rem 1rem;
 		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
-		background: var(--chat-bubble-bg);
+		background: white;
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
+	}
+
+	.chat-empty-state {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		min-height: 100%;
+		padding: 1.1rem;
+		border: 1px dashed rgba(180, 194, 216, 0.65);
+		border-radius: 1.3rem;
+		text-align: center;
+		color: var(--on-surface-variant);
+	}
+
+	.chat-empty-title,
+	.chat-empty-copy {
+		margin: 0;
+	}
+
+	.chat-empty-title {
+		font-weight: 700;
+		color: var(--on-surface);
+	}
+
+	.chat-empty-copy {
+		margin-top: 0.35rem;
+		line-height: 1.55;
 	}
 
 	.chat-user {
@@ -1994,7 +1594,7 @@ type OAuthProvider = 'google';
 	.prompt-chip {
 		padding: 0.7rem 0.95rem;
 		border-radius: 999px;
-		background: var(--prompt-chip-bg);
+		background: white;
 		color: var(--primary);
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -2083,7 +1683,7 @@ type OAuthProvider = 'google';
 		width: 2.9rem;
 		height: 2.9rem;
 		border-radius: 999px;
-		background: var(--icon-bg);
+		background: white;
 		color: var(--primary);
 	}
 
@@ -2123,16 +1723,6 @@ type OAuthProvider = 'google';
 			display: none;
 		}
 
-		.mobile-topbar {
-			position: sticky;
-			top: 1rem;
-			z-index: 10;
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			padding: 1rem 1.2rem;
-		}
-
 		.kit-grid {
 			grid-template-columns: repeat(6, minmax(0, 1fr));
 			padding-bottom: 5.5rem;
@@ -2166,6 +1756,10 @@ type OAuthProvider = 'google';
 	}
 
 	@media (max-width: 720px) {
+		.auth-shell {
+			padding-inline: 1rem;
+		}
+
 		.hero {
 			flex-direction: column;
 			align-items: stretch;

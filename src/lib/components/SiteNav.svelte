@@ -21,11 +21,11 @@
 	let isSigningOut = $state(false);
 	let themeMode = $state<ThemeMode>('light');
 
-	const isDashboard = $derived(page.url.pathname.startsWith('/app'));
+	const pathname = $derived(page.url.pathname);
+	const showDashboard = $derived(currentUser !== null && pathname !== '/app');
+	const showHome = $derived(currentUser !== null && pathname !== '/');
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
-	const primaryActionLabel = $derived(currentUser ? (isDashboard ? 'Home' : 'Dashboard') : 'Login');
-	const primaryActionHref = $derived(currentUser ? (isDashboard ? '/' : '/app') : '/app');
 
 	onMount(() => {
 		if (browser) {
@@ -181,18 +181,21 @@
 			</button>
 
 			{#if currentSession && currentUser}
+				{#if showDashboard}
+					<a class="site-button site-button-primary" href="/app">Dashboard</a>
+				{/if}
+				{#if showHome}
+					<a class="site-button site-button-secondary" href="/">Home</a>
+				{/if}
+				<button class="site-button site-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
+					{isSigningOut ? 'Signing out...' : 'Sign out'}
+				</button>
 				<div class="user-chip" aria-label="Signed in user">
 					<span class="user-avatar">{avatarLetter}</span>
 					<span class="user-name">{displayName}</span>
 				</div>
-				<a class="site-button site-button-secondary" href={primaryActionHref}>
-					{primaryActionLabel}
-				</a>
-				<button class="site-button site-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
-					{isSigningOut ? 'Signing out...' : 'Sign out'}
-				</button>
 			{:else}
-				<button class="site-button" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
+				<button class="site-button site-button-primary" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
 					{isSigningIn ? 'Connecting Google...' : 'Login with Google'}
 				</button>
 			{/if}
@@ -219,12 +222,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.9rem;
-		padding: 0.95rem 1.2rem;
-		background: color-mix(in srgb, var(--surface, #ffffff) 80%, white);
-		border: 1px solid color-mix(in srgb, var(--outline-variant, #cbd5e1) 70%, transparent);
-		border-radius: 999px;
-		backdrop-filter: blur(18px);
-		box-shadow: 0 14px 38px rgba(15, 23, 42, 0.08);
+		padding: 0.25rem 0;
 	}
 
 	.site-brand {
@@ -290,13 +288,20 @@
 	.site-button {
 		border: 0;
 		border-radius: 999px;
-		padding: 0.78rem 1.05rem;
+		padding: 0.9rem 1.25rem;
 		font: inherit;
-		font-weight: 700;
+		font-weight: 800;
 		text-decoration: none;
 		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		background: var(--primary, #00675c);
 		color: white;
+		transition:
+			transform 160ms ease,
+			filter 160ms ease,
+			box-shadow 160ms ease;
 	}
 
 	.site-button:disabled {
@@ -304,9 +309,20 @@
 		cursor: wait;
 	}
 
+	.site-button:hover {
+		transform: translateY(-1px) scale(1.01);
+		filter: brightness(1.03);
+	}
+
+	.site-button-primary {
+		background: linear-gradient(135deg, var(--primary, #00675c), #128d7f);
+		color: white;
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+	}
+
 	.site-button-secondary {
-		background: color-mix(in srgb, var(--secondary-container, #dbeafe) 88%, white);
-		color: var(--on-secondary-container, #0f172a);
+		background: rgba(201, 222, 255, 0.7);
+		color: var(--on-surface, #1f2937);
 	}
 
 	.site-button-ghost {

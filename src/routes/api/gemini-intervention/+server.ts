@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { generateGeminiText } from '$lib/server/gemini';
+import { generateGeminiTextWithFallbacks } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type GeminiRequestBody = {
@@ -12,6 +12,21 @@ type GeminiRequestBody = {
   stressScore?: number;
   stressor?: string;
 };
+
+function shouldUseFallback(result: { ok: false; status: number; message: string }): boolean {
+  const normalized = result.message.toLowerCase();
+
+  return (
+    result.status === 429 ||
+    result.status === 500 ||
+    result.status === 503 ||
+    normalized.includes('high demand') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('rate-limited') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('temporarily unavailable')
+  );
+}
 
 function fallbackInterventionPlan(body: GeminiRequestBody): string {
   const high = body.stressLevel === 'high' || (body.stressScore ?? 0) >= 70;
@@ -35,6 +50,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     );
   }
   const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+  const models = Array.from(new Set([model, 'gemini-2.5-flash']));
 
   const body = (await request.json()) as GeminiRequestBody;
 
@@ -56,19 +72,19 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`
   ].join('\n');
 
-  const result = await generateGeminiText({
+  const result = await generateGeminiTextWithFallbacks({
     apiKey,
     fetch,
     prompt,
     temperature: 0.4,
     maxOutputTokens: 420,
-    model
+    models
   });
 
-  if (!result.ok && result.status === 429) {
+  if (!result.ok && shouldUseFallback(result)) {
     return json({
       plan: fallbackInterventionPlan(body),
-      warning: 'Gemini rate-limited (429). Showing local fallback intervention plan.',
+      warning: `Gemini is temporarily unavailable. Showing local fallback intervention plan instead. (${result.model})`,
       source: 'fallback'
     });
   }

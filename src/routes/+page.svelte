@@ -5,31 +5,19 @@
 <script lang="ts">
 	import SiteNav from '$lib/components/SiteNav.svelte';
 
-	const navLinks = [
-		{ label: 'Features', href: '#features', active: true },
-		{ label: 'Science', href: '#science' },
-		{ label: 'Journal', href: '#journal' },
-		{ label: 'Pricing', href: '#pricing' }
-	];
-
 	const footerLinks = [
 		{ label: 'Privacy Policy', href: '#' },
 		{ label: 'Terms of Service', href: '#' },
 		{ label: 'Help Center', href: '#' },
 		{ label: 'Contact Us', href: '#' }
 	];
+
 </script>
 
-<SiteNav />
-
 <main class="landing-shell">
-	<section class="hero">
-		<div class="hero-nav-links" aria-label="Landing sections">
-			{#each navLinks as link}
-				<a class:active={link.active} href={link.href}>{link.label}</a>
-			{/each}
-		</div>
+	<SiteNav />
 
+	<section class="hero">
 		<div class="hero-copy">
 			<h1>
 				Your quiet corner
@@ -198,64 +186,74 @@
 		--body-overlay-b: rgba(252, 192, 37, 0.12);
 		--body-top: #fbfdff;
 		--body-bottom: #eff5ff;
+		--card-bg: rgba(255, 255, 255, 0.78);
+		--card-shadow: 0 18px 40px rgba(33, 47, 66, 0.08);
+		--play-bg: rgba(255, 255, 255, 0.65);
+		--play-shadow: 0 16px 35px rgba(33, 47, 66, 0.12);
+		--stage-border: rgba(255, 255, 255, 0.45);
 	}
 
 	:global(:root[data-theme='dark']) {
 		--surface-container-lowest: #0d1c2a;
-		--on-secondary-container: #dcedff;
-		--surface-bright: #0b1723;
-		--secondary-fixed: #345f83;
-		--tertiary-fixed-dim: #c69b2e;
-		--secondary-fixed-dim: #2f5576;
-		--primary-fixed: #197d73;
-		--primary-fixed-dim: #166b63;
+		--on-secondary-container: #d9ebff;
+		--surface-bright: #0e1b28;
+		--secondary-fixed: #1b455f;
+		--tertiary-fixed-dim: #c89200;
+		--secondary-fixed-dim: #16394f;
+		--primary-fixed: #67efe0;
+		--primary-fixed-dim: #49d7c9;
 		--surface-container-low: #0f2231;
-		--tertiary-fixed: #f2bf47;
-		--surface-container-high: #173044;
-		--on-secondary-fixed-variant: #dcedff;
-		--on-secondary: #dcedff;
-		--inverse-on-surface: #cad8e8;
-		--secondary: #7fc7ff;
-		--error-dim: #ff8990;
-		--error-container: #6c1d26;
-		--primary-container: #197d73;
+		--tertiary-fixed: #f0b91d;
+		--surface-container-high: #173244;
+		--on-secondary-fixed-variant: #d9ebff;
+		--on-secondary: #e8f2ff;
+		--inverse-on-surface: #0b1825;
+		--secondary: #8ac3ff;
+		--error-dim: #c95b67;
+		--error-container: #5d1d25;
+		--primary-container: #103f3a;
 		--surface-tint: #67efe0;
-		--on-tertiary-fixed-variant: #3c2b00;
-		--outline: #70879c;
-		--inverse-surface: #eef5ff;
+		--on-tertiary-fixed-variant: #fff0c4;
+		--outline: #6f8396;
+		--inverse-surface: #eef4ff;
 		--secondary-container: #1b455f;
 		--outline-variant: #465a6c;
-		--surface-container-highest: #1d3c52;
-		--surface-variant: #173044;
+		--surface-container-highest: #1f3d52;
+		--surface-variant: #173244;
 		--on-surface: #edf5ff;
-		--on-error: #ffeef0;
-		--on-tertiary: #352600;
-		--surface-dim: #08131d;
-		--on-primary-fixed-variant: #d7fff8;
-		--error: #ff8990;
+		--on-error: #ffeff1;
+		--on-tertiary: #fff4df;
+		--surface-dim: #091521;
+		--on-primary-fixed-variant: #d8fff8;
+		--error: #ff8a95;
 		--on-background: #edf5ff;
-		--on-tertiary-container: #3c2b00;
-		--surface: #0b1723;
-		--tertiary: #f2bf47;
-		--on-primary-fixed: #d7fff8;
-		--on-secondary-fixed: #dcedff;
+		--on-tertiary-container: #fff0c4;
+		--surface: #091521;
+		--tertiary: #f0b91d;
+		--on-primary-fixed: #052f2b;
+		--on-secondary-fixed: #e8f2ff;
 		--on-surface-variant: #bacbdd;
-		--on-tertiary-fixed: #2c2000;
-		--on-error-container: #ffeef0;
-		--tertiary-dim: #ddb14e;
-		--tertiary-container: #f2bf47;
+		--on-tertiary-fixed: #4a3400;
+		--on-error-container: #ffd9dd;
+		--tertiary-dim: #dba200;
+		--tertiary-container: #5e4600;
 		--inverse-primary: #00675c;
 		--primary: #67efe0;
-		--secondary-dim: #66b4ef;
+		--secondary-dim: #6baee9;
 		--surface-container: #122636;
 		--background: #091521;
-		--primary-dim: #54d9c9;
+		--primary-dim: #49d7c9;
 		--on-primary: #073a35;
-		--on-primary-container: #d7fff8;
+		--on-primary-container: #d8fff8;
 		--body-overlay-a: rgba(91, 244, 222, 0.14);
-		--body-overlay-b: rgba(82, 120, 170, 0.18);
+		--body-overlay-b: rgba(240, 185, 29, 0.08);
 		--body-top: #0d1a27;
 		--body-bottom: #07111a;
+		--card-bg: rgba(11, 24, 36, 0.82);
+		--card-shadow: 0 22px 48px rgba(0, 0, 0, 0.35);
+		--play-bg: rgba(16, 33, 46, 0.9);
+		--play-shadow: 0 18px 42px rgba(0, 0, 0, 0.3);
+		--stage-border: rgba(186, 203, 221, 0.16);
 	}
 
 	:global(body) {
@@ -289,24 +287,9 @@
 	}
 
 	.landing-shell {
-		padding: 1.25rem 1.5rem 6rem;
+		padding: 0 1.5rem 6rem;
 	}
 
-	.hero-nav-links {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 1rem;
-		max-width: max-content;
-		margin: 0 auto 1.8rem;
-		padding: 0.7rem 0.9rem;
-		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.5);
-		border: 1px solid rgba(255, 255, 255, 0.72);
-		backdrop-filter: blur(14px);
-	}
-
-	.hero-nav-links a,
 	.footer-links a,
 	.hero-actions p a {
 		color: var(--on-surface-variant);
@@ -317,18 +300,9 @@
 			border-color 160ms ease;
 	}
 
-	.hero-nav-links a:hover,
 	.footer-links a:hover,
 	.hero-actions p a:hover {
 		color: var(--primary);
-	}
-
-	.hero-nav-links a.active {
-		color: var(--primary);
-		font-weight: 700;
-		background: rgba(20, 184, 166, 0.14);
-		padding: 0.55rem 0.9rem;
-		border-radius: 999px;
 	}
 
 	.primary-action,
@@ -429,10 +403,10 @@
 		width: 6rem;
 		height: 6rem;
 		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.65);
+		background: var(--play-bg);
 		backdrop-filter: blur(14px);
 		color: var(--primary);
-		box-shadow: 0 16px 35px rgba(33, 47, 66, 0.12);
+		box-shadow: var(--play-shadow);
 	}
 
 	.play-button .material-symbols-outlined {
@@ -451,7 +425,7 @@
 	.stage-frame {
 		position: absolute;
 		inset: 0;
-		border: 12px solid rgba(255, 255, 255, 0.45);
+		border: 12px solid var(--stage-border);
 		border-radius: 1.6rem;
 		pointer-events: none;
 	}
@@ -508,8 +482,8 @@
 		gap: 1.5rem;
 		padding: 2.4rem;
 		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.78);
-		box-shadow: 0 18px 40px rgba(33, 47, 66, 0.08);
+		background: var(--card-bg);
+		box-shadow: var(--card-shadow);
 	}
 
 	.bento-card h3 {
@@ -746,11 +720,6 @@
 	@media (max-width: 640px) {
 		.landing-shell {
 			padding-inline: 1rem;
-		}
-
-		.hero-nav-links {
-			flex-wrap: wrap;
-			margin-bottom: 1.5rem;
 		}
 
 		.hero {

@@ -39,7 +39,7 @@ Set these values in `.env`:
 
 - `PUBLIC_SUPABASE_URL`
 - `PUBLIC_SUPABASE_ANON_KEY`
-- Enable at least one OAuth provider in Supabase Auth (the app supports Google and GitHub)
+- Enable Google OAuth in Supabase Auth and add your local/dev redirect URLs there
 - `GEMINI_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`)
 - `GEMINI_MODEL` (optional, defaults to `gemini-2.5-flash-lite`)
 
@@ -47,7 +47,7 @@ Set these values in `.env`:
 
 - Open SQL Editor in your Supabase project
 - Run SQL from `supabase/schema.sql`
-- If you already created the earlier MVP tables, re-run the updated schema so `sensor_sessions` has the new summary columns and `session_summary` JSON field
+- If you already created the earlier MVP tables, re-run the updated schema so `sensor_sessions` has the new summary columns and `summary_payload` JSON field
 
 4. Run app
 
@@ -62,13 +62,13 @@ npm run dev -- --open
 - The app calls a server endpoint that uses `GEMINI_KEY` privately
 - If you hit free-tier rate limits often, use `gemini-2.5-flash-lite`
 
-6. Use Kelp personality helper
+6. Use Kelp Coach
 
-- Open `Ask Kelp (Gemini Helper)`
+- Open `/app/coach` from the dashboard
 - Pick a persona: `Calm Coach`, `Tough Love`, or `Study Planner`
 - Use quick prompt chips or type your own question
 - Get a concise personality-driven response with one next step
-- Keep context with recent chat memory in the UI
+- If Gemini is temporarily unavailable, the app falls back to a local coach response instead of hard-failing
 
 ## Demo script (60 seconds)
 
