@@ -3,62 +3,18 @@
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
-	import { connectHeartRateMonitor } from '$lib/polar';
+	import {
+		connectSharedSensor,
+		disconnectSharedSensor,
+		endSharedSession,
+		sensorSession,
+		simulateSharedSpike,
+		startSharedSession,
+		type DiagnosticSample,
+		type SavedDiagnosticSession
+	} from '$lib/sensor-session';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
-
-	type DiagnosticSample = {
-		recorded_at: string;
-		elapsed_ms: number;
-		heart_rate: number;
-		rr_ms: number | null;
-		hrv_ms: number | null;
-	};
-
-	type SavedDiagnosticSession = {
-		id: string;
-		created_at: string;
-		started_at: string;
-		ended_at: string | null;
-		duration_seconds: number | null;
-		avg_heart_rate: number | null;
-		avg_rr_ms: number | null;
-		avg_hrv_ms: number | null;
-		last_hrv_ms: number | null;
-		max_heart_rate: number | null;
-		sample_count: number;
-		device_name: string | null;
-		capture_type: string | null;
-		raw_data_path: string | null;
-		summary_payload: {
-			sessionId: string;
-			userId: string;
-			deviceInfo: {
-				name: string;
-			} | null;
-			captureType: string;
-			startedAt: string;
-			endedAt: string;
-			durationSeconds: number;
-			sampleCount: number;
-			averageHeartRate: number | null;
-			averageRrMs: number | null;
-			averageHrvMs: number | null;
-			lastHrvMs: number | null;
-			maxHeartRate: number | null;
-			segmentLengthSeconds: number;
-			segments: Array<{
-				index: number;
-				startedAt: string;
-				endedAt: string;
-				durationSeconds: number;
-				sampleCount: number;
-				averageHeartRate: number | null;
-				averageRrMs: number | null;
-				averageHrvMs: number | null;
-			}>;
-		} | null;
-	};
 
 	type SupabaseLikeError = {
 		message?: string;
@@ -78,6 +34,7 @@
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
 	let isConnecting = $state(false);
+	let isSavingSession = $state(false);
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
@@ -89,7 +46,6 @@
 	let selectedDiagnosticSessionId = $state<string | null>(null);
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
 	let showEntryAlert = $state(true);
 
 	const displayName = $derived(getDisplayName(currentUser));
@@ -102,8 +58,24 @@
 	}
 
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			heartRate = state.heartRate;
+			rrMs = state.rrMs;
+			hrvMs = state.hrvMs;
+			isConnecting = state.isConnecting;
+			isSavingSession = state.isSavingSession;
+			isSensorConnected = state.isSensorConnected;
+			canUseBluetooth = state.canUseBluetooth;
+			sensorStatus = state.sensorStatus;
+			sessionStartedAt = state.sessionStartedAt;
+			sessionDeviceName = state.sessionDeviceName;
+			sessionSamples = state.sessionSamples;
+		});
+
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -134,9 +106,7 @@
 
 		return () => {
 			subscription.unsubscribe();
-			if (stopSensor) {
-				void stopSensor();
-			}
+			unsubscribeSensor();
 		};
 	});
 
@@ -189,70 +159,6 @@
 		return 'Friend';
 	}
 
-	function averageOf(values: number[]): number | null {
-		if (values.length === 0) {
-			return null;
-		}
-
-		return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
-	}
-
-	function chooseSegmentLengthSeconds(durationSeconds: number): number {
-		return durationSeconds < 20 * 60 ? 60 : 300;
-	}
-
-	function buildSessionSegments(
-		samples: DiagnosticSample[],
-		startedAt: string,
-		durationSeconds: number
-	): Array<{
-		index: number;
-		startedAt: string;
-		endedAt: string;
-		durationSeconds: number;
-		sampleCount: number;
-		averageHeartRate: number | null;
-		averageRrMs: number | null;
-		averageHrvMs: number | null;
-	}> {
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const segmentBuckets = new Map<number, DiagnosticSample[]>();
-
-		for (const sample of samples) {
-			const segmentIndex = Math.floor(sample.elapsed_ms / (segmentLengthSeconds * 1000));
-			const existing = segmentBuckets.get(segmentIndex) ?? [];
-			existing.push(sample);
-			segmentBuckets.set(segmentIndex, existing);
-		}
-
-		return Array.from(segmentBuckets.entries())
-			.sort(([left], [right]) => left - right)
-			.map(([segmentIndex, bucket]) => {
-				const segmentStartedMs = new Date(startedAt).getTime() + segmentIndex * segmentLengthSeconds * 1000;
-				const heartRates = bucket.map((sample) => sample.heart_rate);
-				const rrValues = bucket
-					.map((sample) => sample.rr_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const hrvValues = bucket
-					.map((sample) => sample.hrv_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const endedAtMs = bucket.at(-1)
-					? new Date(startedAt).getTime() + (bucket.at(-1)?.elapsed_ms ?? 0)
-					: segmentStartedMs;
-
-				return {
-					index: segmentIndex + 1,
-					startedAt: new Date(segmentStartedMs).toISOString(),
-					endedAt: new Date(endedAtMs).toISOString(),
-					durationSeconds: Math.max(1, Math.round((endedAtMs - segmentStartedMs) / 1000)),
-					sampleCount: bucket.length,
-					averageHeartRate: averageOf(heartRates),
-					averageRrMs: averageOf(rrValues),
-					averageHrvMs: averageOf(hrvValues)
-				};
-			});
-	}
-
 	function formatSessionDate(dateString: string): string {
 		return new Date(dateString).toLocaleString([], {
 			month: 'short',
@@ -268,6 +174,20 @@
 		}
 
 		return value.toFixed(digits);
+	}
+
+	function formatFullTimestamp(dateString: string | null): string {
+		if (!dateString) {
+			return '--';
+		}
+
+		return new Date(dateString).toLocaleString([], {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
 	}
 
 	async function loadDiagnosticSessions(userId: string) {
@@ -331,212 +251,33 @@
 	}
 
 	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
+		await connectSharedSensor();
+	}
 
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
+	function startSession() {
+		startSharedSession(Boolean(currentUser));
+		lastSavedDiagnosticSession = null;
+	}
 
-		try {
-			const startedAt = new Date().toISOString();
-			sessionStartedAt = startedAt;
-			sessionSamples = [];
-			lastSavedDiagnosticSession = null;
-
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-				hrvMs = reading.hrvMs;
-
-				const recordedAt = new Date().toISOString();
-				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
-				sessionSamples = [
-					...sessionSamples,
-					{
-						recorded_at: recordedAt,
-						elapsed_ms: elapsedMs,
-						heart_rate: reading.heartRate,
-						rr_ms: reading.rrMs ?? null,
-						hrv_ms: reading.hrvMs ?? null
-					}
-				].slice(-600);
-			});
-
-			sessionDeviceName = 'Polar H9';
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sessionStartedAt = null;
-			sessionSamples = [];
-			sensorStatus = describeError(error, 'Could not connect to sensor');
-		} finally {
-			isConnecting = false;
+	async function endSession() {
+		const result = await endSharedSession(currentUser?.id ?? null);
+		diagnosticStatus = result.warning;
+		if (result.savedSession) {
+			lastSavedDiagnosticSession = result.savedSession;
+			diagnosticSessions = [
+				result.savedSession,
+				...diagnosticSessions.filter((session) => session.id !== result.savedSession?.id)
+			];
+			selectedDiagnosticSessionId = result.savedSession.id;
 		}
 	}
 
 	async function disconnectSensor() {
-		if (!stopSensor) {
-			return;
-		}
-
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
-
-		if (!supabase) {
-			sensorStatus = 'Disconnected. Supabase is not configured, so diagnostics were not saved.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		if (!currentUser) {
-			sensorStatus = 'Disconnected. Sign in to save diagnostics.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		const endedAt = new Date().toISOString();
-		const durationSeconds = sessionStartedAt
-			? Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(sessionStartedAt).getTime()) / 1000))
-			: 0;
-		const heartRates = sessionSamples.map((sample) => sample.heart_rate);
-		const rrValues = sessionSamples
-			.map((sample) => sample.rr_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const hrvValues = sessionSamples
-			.map((sample) => sample.hrv_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const sessionId = crypto.randomUUID();
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const summaryPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			averageHeartRate: averageOf(heartRates),
-			averageRrMs: averageOf(rrValues),
-			averageHrvMs: averageOf(hrvValues),
-			lastHrvMs: hrvValues.at(-1) ?? null,
-			maxHeartRate: heartRates.length > 0 ? Math.max(...heartRates) : null,
-			segmentLengthSeconds,
-			segments: buildSessionSegments(sessionSamples, sessionStartedAt ?? endedAt, durationSeconds)
-		};
-		const rawPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			readings: sessionSamples
-		};
-		const rawDataPath = `${currentUser.id}/${sessionId}.json`;
-
-		try {
-			const { error: uploadError } = await supabase.storage
-				.from('diagnostic-raw')
-				.upload(rawDataPath, JSON.stringify(rawPayload, null, 2), {
-					contentType: 'application/json',
-					upsert: true
-				});
-
-			if (uploadError) {
-				throw uploadError;
-			}
-
-			const { data, error } = await supabase
-				.from('sensor_sessions')
-				.insert({
-					id: sessionId,
-					user_id: currentUser.id,
-					started_at: sessionStartedAt ?? endedAt,
-					ended_at: endedAt,
-					duration_seconds: durationSeconds,
-					avg_heart_rate: summaryPayload.averageHeartRate,
-					avg_rr_ms: summaryPayload.averageRrMs,
-					avg_hrv_ms: summaryPayload.averageHrvMs,
-					last_hrv_ms: summaryPayload.lastHrvMs,
-					max_heart_rate: summaryPayload.maxHeartRate,
-					sample_count: summaryPayload.sampleCount,
-					device_name: summaryPayload.deviceInfo?.name ?? null,
-					capture_type: summaryPayload.captureType,
-					raw_data_path: rawDataPath,
-					summary_payload: summaryPayload,
-					session_summary: {
-						startedAt: summaryPayload.startedAt,
-						endedAt: summaryPayload.endedAt,
-						durationSeconds: summaryPayload.durationSeconds,
-						sampleCount: summaryPayload.sampleCount,
-						averageHeartRate: summaryPayload.averageHeartRate,
-						averageRrMs: summaryPayload.averageRrMs,
-						averageHrvMs: summaryPayload.averageHrvMs,
-						lastHrvMs: summaryPayload.lastHrvMs,
-						maxHeartRate: summaryPayload.maxHeartRate,
-						segmentLengthSeconds: summaryPayload.segmentLengthSeconds
-					}
-				})
-				.select(
-					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, device_name, capture_type, raw_data_path, summary_payload'
-				)
-				.single();
-
-			if (error) {
-				throw error;
-			}
-
-			lastSavedDiagnosticSession = data as SavedDiagnosticSession;
-			diagnosticSessions = [
-				lastSavedDiagnosticSession,
-				...diagnosticSessions.filter((session) => session.id !== lastSavedDiagnosticSession?.id)
-			];
-			selectedDiagnosticSessionId = lastSavedDiagnosticSession.id;
-			sensorStatus = `Disconnected. Diagnostic session saved (${data.id.slice(0, 8)}...).`;
-		} catch (error) {
-			sensorStatus = describeError(error, 'Disconnected, but failed to save diagnostics.');
-		} finally {
-			sessionStartedAt = null;
-			sessionSamples = [];
-		}
+		await disconnectSharedSensor();
 	}
 
 	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
-		const randomHrv = 18 + Math.floor(Math.random() * 28);
-
-		heartRate = randomHr;
-		rrMs = randomRr;
-		hrvMs = randomHrv;
-
-		if (sessionStartedAt) {
-			const recordedAt = new Date().toISOString();
-			const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(sessionStartedAt).getTime());
-			sessionSamples = [
-				...sessionSamples,
-				{
-					recorded_at: recordedAt,
-					elapsed_ms: elapsedMs,
-					heart_rate: randomHr,
-					rr_ms: randomRr,
-					hrv_ms: randomHrv
-				}
-			].slice(-600);
-		}
-
-		sensorStatus = 'Simulated stress signal loaded';
+		simulateSharedSpike();
 	}
 
 	function acknowledgeAlert() {
@@ -630,6 +371,17 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
+						<span>
+							{sessionStartedAt
+								? isSavingSession
+									? 'Ending Session...'
+									: 'End Session'
+								: 'Start Session'}
+						</span>
+					</button>
+
 					<div class="inline-buttons">
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
@@ -639,6 +391,15 @@
 				</div>
 
 				<p class="section-copy">{sensorStatus}</p>
+
+				<div class="saved-panel">
+					<p class="saved-title">Session status</p>
+					<div class="saved-metrics">
+						<span>{sessionStartedAt ? 'In progress' : 'Not recording'}</span>
+						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
+						<span>{sessionSamples.length} captured samples</span>
+					</div>
+				</div>
 
 				{#if lastSavedDiagnosticSession}
 					<div class="saved-panel">
@@ -1061,6 +822,10 @@
 	.button-subtle {
 		background: var(--secondary-container);
 		color: var(--on-surface);
+	}
+
+	.session-button {
+		width: 100%;
 	}
 
 	.saved-panel,

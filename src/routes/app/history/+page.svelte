@@ -253,7 +253,7 @@
 				.select(
 					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_hrv_ms, device_name, capture_type, summary_payload'
 				)
-				.contains('summary_payload', { userId })
+				.eq('user_id', userId)
 				.order('started_at', { ascending: false })
 				.limit(60);
 
@@ -261,9 +261,7 @@
 				throw error;
 			}
 
-			historySessions = ((data ?? []) as SensorSessionRecord[]).filter(
-				(session) => session.summary_payload?.userId === userId
-			);
+			historySessions = (data ?? []) as SensorSessionRecord[];
 
 			if (selectedDate && !historySessions.some((session) => getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate)) {
 				selectedDate = '';
