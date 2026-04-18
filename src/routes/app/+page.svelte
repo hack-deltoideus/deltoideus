@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
@@ -1074,6 +1075,8 @@ type OAuthProvider = 'google';
 						</select>
 					</label>
 				</div>
+
+				<RiveCharacter />
 
 				<div class="chat-shell">
 					{#if helperHistory.length > 0}
