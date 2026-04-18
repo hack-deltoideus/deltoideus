@@ -1,710 +1,213 @@
-<script lang="ts">
-	import { browser } from '$app/environment';
-	import { connectHeartRateMonitor } from '$lib/polar';
-	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
-	import { hasSupabaseConfig, supabase } from '$lib/supabase';
-
-	type SavedCheckIn = {
-		id: string;
-		created_at: string;
-		mood: number;
-		workload: number;
-		sleep_quality: number;
-		stress_score: number;
-		stress_level: StressLevel;
-		heart_rate: number | null;
-		rr_ms: number | null;
-		stressor: string | null;
-	};
-
-	let mood = $state(5);
-	let workload = $state(5);
-	let sleepQuality = $state(5);
-	let stressor = $state('');
-
-	let heartRate = $state<number | undefined>(undefined);
-	let rrMs = $state<number | undefined>(undefined);
-	let baselineHeartRate = $state(65);
-
-	const stressResult = $derived(
-		calculateStress({
-			mood,
-			workload,
-			sleepQuality,
-			heartRate,
-			baselineHeartRate,
-			rrMs
-		})
-	);
-
-	const stressScore = $derived(stressResult.score);
-	const stressLevel = $derived(stressResult.level as StressLevel);
-	const intervention = $derived(interventionFor(stressResult.level));
-
-	let isSubmitting = $state(false);
-	let submitStatus = $state('');
-	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
-	let isGeneratingPlan = $state(false);
-	let geminiPlan = $state('');
-	let geminiStatus = $state('');
-	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
-	let helperReply = $state('');
-	let helperStatus = $state('');
-	let isAskingHelper = $state(false);
-	let helperSource = $state<'gemini' | 'fallback' | ''>('');
-	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
-	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
-
-	let isConnecting = $state(false);
-	let isSensorConnected = $state(false);
-	let canUseBluetooth = $state(false);
-	let sensorStatus = $state('Disconnected');
-
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
-
-	const levelClass = $derived(`level-${stressLevel}`);
-	const levelLabel = $derived(
-		stressLevel === 'low' ? 'Low' : stressLevel === 'rising' ? 'Rising' : 'High'
-	);
-	const levelDescriptor = $derived(
-		stressLevel === 'low'
-			? 'Steady state'
-			: stressLevel === 'rising'
-				? 'Pressure building'
-				: 'Action recommended'
-	);
-	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
-
-	if (browser) {
-		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
-	}
-
-	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
-
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
-
-		try {
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-			});
-
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sensorStatus = error instanceof Error ? error.message : 'Could not connect to sensor';
-		} finally {
-			isConnecting = false;
-		}
-	}
-
-	async function disconnectSensor() {
-		if (!stopSensor) {
-			return;
-		}
-
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
-		sensorStatus = 'Disconnected';
-	}
-
-	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
-
-		heartRate = randomHr;
-		rrMs = randomRr;
-		sensorStatus = 'Simulated stress signal loaded';
-	}
-
-	async function submitCheckIn() {
-		submitStatus = '';
-		lastSavedCheckIn = null;
-
-		if (!supabase) {
-			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
-			return;
-		}
-
-		isSubmitting = true;
-
-		try {
-			const checkInPayload = {
-				mood,
-				workload,
-				sleep_quality: sleepQuality,
-				stress_score: stressScore,
-				stress_level: stressLevel,
-				heart_rate: heartRate,
-				rr_ms: rrMs,
-				stressor: stressor.trim() || null
-			};
-
-			const { data: savedCheckIn, error: checkInError } = await supabase
-				.from('check_ins')
-				.insert(checkInPayload)
-				.select(
-					'id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor'
-				)
-				.single();
-
-			if (checkInError) {
-				throw checkInError;
-			}
-
-			if (!savedCheckIn) {
-				throw new Error('Check-in save succeeded, but the saved row was not returned.');
-			}
-
-			lastSavedCheckIn = savedCheckIn as SavedCheckIn;
-
-			if (stressLevel === 'rising' || stressLevel === 'high') {
-				const { error: interventionError } = await supabase.from('interventions').insert({
-					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
-					trigger_level: stressLevel,
-					notes: intervention
-				});
-
-				if (interventionError) {
-					throw interventionError;
-				}
-			}
-
-			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
-		} catch (error) {
-			submitStatus = error instanceof Error ? error.message : 'Failed to save check-in';
-		} finally {
-			isSubmitting = false;
-		}
-	}
-
-	async function generateGeminiPlan() {
-		isGeneratingPlan = true;
-		geminiStatus = '';
-		geminiSource = '';
-
-		try {
-			const response = await fetch('/api/gemini-intervention', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressScore,
-					stressor
-				})
-			});
-
-			const payload = await response.json();
-			if (!response.ok) {
-				throw new Error(payload?.error ?? 'Failed to generate AI plan');
-			}
-
-			geminiPlan = payload.plan ?? '';
-			if (!geminiPlan) {
-				throw new Error('Gemini returned an empty plan.');
-			}
-
-			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			geminiStatus = payload?.warning ?? 'AI intervention generated.';
-		} catch (error) {
-			geminiStatus = error instanceof Error ? error.message : 'Failed to generate plan.';
-		} finally {
-			isGeneratingPlan = false;
-		}
-	}
-
-	async function askGeminiHelper() {
-		helperStatus = '';
-		helperReply = '';
-		helperSource = '';
-
-		const question = helperQuestion.trim();
-		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
-			return;
-		}
-
-		isAskingHelper = true;
-
-		try {
-			const nextHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
-				...helperHistory,
-				{ role: 'user', text: question }
-			];
-
-			const response = await fetch('/api/gemini-helper', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					question,
-					persona: helperPersona,
-					history: helperHistory,
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressor
-				})
-			});
-
-			const payload = await response.json();
-			if (!response.ok) {
-				throw new Error(payload?.error ?? 'Failed to get helper response');
-			}
-
-			helperReply = payload.reply ?? '';
-			if (!helperReply) {
-				throw new Error('Kelp returned an empty response.');
-			}
-
-			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
-				...nextHistory,
-				{ role: 'assistant', text: helperReply }
-			];
-			helperHistory = updatedHistory.slice(-8);
-
-			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
-		} catch (error) {
-			helperStatus = error instanceof Error ? error.message : 'Failed to ask helper.';
-		} finally {
-			isAskingHelper = false;
-		}
-	}
-
-	function applyQuickPrompt(prompt: string) {
-		helperQuestion = prompt;
-	}
-</script>
-
 <svelte:head>
-	<title>Sanctuary | Your Mental Space</title>
+	<title>Sanctuary | Your Space for Peace</title>
 </svelte:head>
 
-<main class="app-shell">
-	<header class="mobile-topbar kit-panel">
-		<div>
-			<p class="brand-kicker">Sanctuary</p>
-			<p class="brand-subtitle">Mental space</p>
-		</div>
-		<button class="icon-button" type="button" aria-label="Profile">
-			<span class="material-symbols-outlined">account_circle</span>
-		</button>
+<script lang="ts">
+	const navLinks = [
+		{ label: 'Features', href: '#features', active: true },
+		{ label: 'Science', href: '#science' },
+		{ label: 'Journal', href: '#journal' },
+		{ label: 'Pricing', href: '#pricing' }
+	];
+
+	const footerLinks = [
+		{ label: 'Privacy Policy', href: '#' },
+		{ label: 'Terms of Service', href: '#' },
+		{ label: 'Help Center', href: '#' },
+		{ label: 'Contact Us', href: '#' }
+	];
+</script>
+
+<main class="landing-shell">
+	<header class="topbar">
+		<nav class="topbar-inner">
+			<a class="brand" href="/">Sanctuary</a>
+
+			<div class="nav-links" aria-label="Primary">
+				{#each navLinks as link}
+					<a class:active={link.active} href={link.href}>{link.label}</a>
+				{/each}
+			</div>
+
+			<a class="nav-cta" href="/app">Login</a>
+		</nav>
 	</header>
 
-	<aside class="sidebar kit-panel">
-		<div class="sidebar-block">
-			<p class="brand-kicker">Sanctuary</p>
-			<h2 class="sidebar-title">Your calm command center</h2>
+	<section class="hero">
+		<div class="hero-copy">
+			<h1>
+				Your quiet corner
+				<br />
+				in a <span>noisy</span> world.
+			</h1>
+			<p>
+				A sanctuary designed to help you breathe, reflect, and grow. Science-backed tools
+				wrapped in an experience that feels like a soft exhale.
+			</p>
+		</div>
 
-			<div class="profile-card">
-				<div class="avatar">A</div>
-				<div>
-					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">Ready for your check-in?</p>
+		<div class="hero-stage" aria-label="Experience the calm preview">
+			<div class="hero-orb orb-left"></div>
+			<div class="hero-orb orb-right"></div>
+			<div class="play-center">
+				<div class="play-button">
+					<span class="material-symbols-outlined filled-icon">play_arrow</span>
 				</div>
+				<p>Experience the Calm</p>
 			</div>
+			<div class="stage-frame"></div>
 		</div>
 
-		<nav class="nav-stack" aria-label="Primary">
-			<a class="nav-item is-active" href="#dashboard">
-				<span class="material-symbols-outlined">dashboard</span>
-				<span>Dashboard</span>
+		<div class="hero-actions">
+			<a class="primary-action" href="/app">
+				<span>Login</span>
+				<span class="material-symbols-outlined">arrow_forward</span>
 			</a>
-			<a class="nav-item" href="#checkin">
-				<span class="material-symbols-outlined">edit_note</span>
-				<span>Check-in</span>
-			</a>
-			<a class="nav-item" href="#kelp">
-				<span class="material-symbols-outlined">psychology</span>
-				<span>AI Coach</span>
-			</a>
-			<a class="nav-item" href="#sensor">
-				<span class="material-symbols-outlined">history</span>
-				<span>History</span>
-			</a>
-		</nav>
-
-		<div class="sidebar-cta">
-			<button class="button button-tertiary" type="button" onclick={generateGeminiPlan}>
-				Start Daily Goal
-			</button>
+			<p>
+				New here?
+				<a href="#pricing">Join the waitlist</a>
+			</p>
 		</div>
-	</aside>
+	</section>
 
-	<div class="main-column">
-		<section class="hero" id="dashboard">
+	<section class="bento-grid" id="features">
+		<article class="bento-card bento-wide">
 			<div>
-				<h1>Welcome back, Alex</h1>
-				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
+				<h3>Mindful Journaling</h3>
+				<p>
+					Our AI-powered prompts help you dig deeper into your thoughts without the pressure
+					of a blank page.
+				</p>
 			</div>
-
-			<div class="hero-streak kit-panel">
-				<div class="hero-streak-icon">
-					<span class="material-symbols-outlined streak-icon">celebration</span>
-				</div>
-				<div>
-					<p class="hero-streak-label">Daily Streak</p>
-					<p class="hero-streak-value">{streakDays} DAYS</p>
-				</div>
+			<div class="tag-row">
+				<span>Reflective</span>
+				<span>Private</span>
 			</div>
-		</section>
+			<div class="card-bloom"></div>
+		</article>
 
-		<section class="kit-grid">
-			<article class="stress-card kit-panel {levelClass}">
-				<div class="card-topline">
-					<p class="meta-label">Stress Detection</p>
-					<span class="material-symbols-outlined">waves</span>
-				</div>
+		<article class="bento-card bento-tertiary">
+			<span class="material-symbols-outlined">colors_spark</span>
+			<div>
+				<h3>Growth Tracking</h3>
+				<p>Visualize your progress with our kinetic mood maps.</p>
+			</div>
+		</article>
 
-				<div class="score-row">
-					<p class="score-number">{stressScore}</p>
-					<p class="score-max">/100</p>
-				</div>
+		<article class="bento-card bento-center" id="science">
+			<div class="science-badge">
+				<span class="material-symbols-outlined">verified_user</span>
+			</div>
+			<h3>Science First</h3>
+			<p>Built with clinical psychologists for real results.</p>
+		</article>
 
-				<div class="pill-row">
-					<p class="pill pill-primary">Level: {levelLabel}</p>
-				</div>
+		<article class="bento-card bento-wide bento-split" id="journal">
+			<div class="split-copy">
+				<h3>A sanctuary for your eyes.</h3>
+				<p>
+					We've eliminated the clutter. No notifications, no social pressure. Just you and
+					your thoughts.
+				</p>
+			</div>
+			<div class="wireframe-panel">
+				<div></div>
+				<div></div>
+				<div></div>
+			</div>
+		</article>
+	</section>
 
-				<div class="coach-box">
-					<p class="coach-title">Coach Suggestion</p>
-					<p class="coach-copy">{intervention}</p>
-					<p class="coach-caption">{levelDescriptor}</p>
-				</div>
-
-				<div class="status-group">
-					{#if geminiSource}
-						<p class="source-badge {geminiSource === 'fallback' ? 'fallback' : 'live'}">
-							{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-						</p>
-					{/if}
-
-					<button class="button button-ghost-on-dark" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
-						{isGeneratingPlan ? 'Generating AI Plan...' : 'Generate Gemini Plan'}
-					</button>
-				</div>
-
-				{#if geminiStatus}
-					<p class="inline-status on-dark">{geminiStatus}</p>
-				{/if}
-
-				{#if geminiPlan}
-					<pre class="output-panel">{geminiPlan}</pre>
-				{/if}
-			</article>
-
-			<article class="checkin-card kit-panel" id="checkin">
-				<div class="section-heading">
-					<div>
-						<h2>Daily Check-in</h2>
-					</div>
-					<div class="badge-icon accent-primary">
-						<span class="material-symbols-outlined filled-icon">favorite</span>
-					</div>
-				</div>
-
-				<div class="slider-grid">
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-tertiary">sentiment_satisfied</span>
-							<span>Mood</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={mood} />
-						<span class="slider-scale">
-							<span>Gloomy</span>
-							<strong>{mood}</strong>
-							<span>Radiant</span>
-						</span>
-					</label>
-
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-secondary">work</span>
-							<span>Workload</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={workload} />
-						<span class="slider-scale">
-							<span>Light</span>
-							<strong>{workload}</strong>
-							<span>Heavy</span>
-						</span>
-					</label>
-
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-primary">bedtime</span>
-							<span>Sleep</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={sleepQuality} />
-						<span class="slider-scale">
-							<span>Restless</span>
-							<strong>{sleepQuality}</strong>
-							<span>Deep</span>
-						</span>
-					</label>
-				</div>
-
-				<label class="field">
-					<span class="field-label">Main stressor</span>
-					<input
-						bind:value={stressor}
-						placeholder="Exams, deadlines, social, sleep..."
-						maxlength="120"
-					/>
-				</label>
-
-				<div class="action-row">
-					<button class="button" onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig}>
-						{isSubmitting ? 'Saving...' : 'Save Check-in'}
-					</button>
-				</div>
-
-				{#if !hasSupabaseConfig}
-					<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env`.</p>
-				{/if}
-
-				{#if submitStatus}
-					<p class="inline-status">{submitStatus}</p>
-				{/if}
-
-				{#if lastSavedCheckIn}
-					<div class="saved-panel">
-						<p class="saved-title">Last saved check-in</p>
-						<div class="saved-metrics">
-							<span>{lastSavedCheckIn.stress_level.toUpperCase()}</span>
-							<span>Score {lastSavedCheckIn.stress_score}</span>
-							<span>Mood {lastSavedCheckIn.mood}</span>
-							<span>Workload {lastSavedCheckIn.workload}</span>
-							<span>Sleep {lastSavedCheckIn.sleep_quality}</span>
-						</div>
-						<p class="saved-copy">
-							Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm and RR {lastSavedCheckIn.rr_ms ?? '--'} ms.
-						</p>
-						{#if lastSavedCheckIn.stressor}
-							<p class="saved-copy">Stressor: {lastSavedCheckIn.stressor}</p>
-						{/if}
-					</div>
-				{/if}
-			</article>
-
-			<article class="sensor-card kit-panel" id="sensor">
-				<div class="section-heading">
-					<div>
-						<h3>Live Sensor</h3>
-					</div>
-					<div class="live-indicator">
-						<span class:dot-live={isSensorConnected} class="live-dot"></span>
-						<span>{isSensorConnected ? 'Live' : 'Standby'}</span>
-					</div>
-				</div>
-
-				<div class="metric-pair">
-					<div class="metric-card">
-						<p class="metric-label">HEART RATE</p>
-						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">RR INTERVAL</p>
-						<p class="metric-value secondary">{rrMs ?? '--'} <span>MS</span></p>
-					</div>
-				</div>
-
-				<div class="stacked-actions">
-					<button
-						class="button button-outline"
-						onclick={connectSensor}
-						disabled={!canUseBluetooth || isConnecting || isSensorConnected}
-					>
-						<span class="material-symbols-outlined">bluetooth</span>
-						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
-					</button>
-
-					<div class="inline-buttons">
-						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
-							Disconnect
-						</button>
-						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
-					</div>
-				</div>
-
-				<p class="section-copy">{sensorStatus}</p>
-
-				{#if !canUseBluetooth}
-					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
-				{/if}
-			</article>
-
-			<article class="helper-card kit-panel" id="kelp">
-				<div class="section-heading">
-					<div class="helper-heading">
-						<div class="badge-icon accent-tertiary">
-							<span class="material-symbols-outlined">smart_toy</span>
-						</div>
-						<div>
-							<h3>Ask Kelp</h3>
-							<p class="helper-subtitle">Your AI Resilience Coach</p>
-						</div>
-					</div>
-
-					<label class="persona-select">
-						<span class="sr-only">Personality</span>
-						<select bind:value={helperPersona}>
-							<option value="calm-coach">Zen Master</option>
-							<option value="tough-love">Strict Trainer</option>
-							<option value="study-planner">Supportive Friend</option>
-						</select>
-					</label>
-				</div>
-
-				<div class="chat-shell">
-					{#if helperHistory.length > 0}
-						{#each helperHistory as msg}
-							<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
-								<p>{msg.text}</p>
-							</div>
-						{/each}
-					{:else}
-						<div class="chat-bubble">
-							<p class="chat-author">Kelp</p>
-							<p>
-								Hello Alex! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
-							</p>
-						</div>
-					{/if}
-
-					{#if helperReply}
-						<div class="chat-bubble">
-							<p class="chat-author">Latest Reply</p>
-							<p>{helperReply}</p>
-						</div>
-					{/if}
-				</div>
-
-				<div class="prompt-row">
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Help me focus')}
-					>
-						&quot;Help me focus&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Log a victory')}
-					>
-						&quot;Log a victory&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Quick breathwork')}
-					>
-						&quot;Quick breathwork&quot;
-					</button>
-				</div>
-
-				<div class="message-row">
-					<input
-						class="message-input"
-						bind:value={helperQuestion}
-						placeholder="Type a message to Kelp..."
-						maxlength="700"
-					/>
-					<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-						<span class="material-symbols-outlined">send</span>
-					</button>
-				</div>
-
-				{#if helperSource}
-					<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-					</p>
-				{/if}
-
-				{#if helperStatus}
-					<p class="inline-status">{helperStatus}</p>
-				{/if}
-			</article>
-		</section>
-	</div>
-
-	<footer class="mobile-footer kit-panel">
-		<a class="footer-item is-active" href="#dashboard">
-			<span class="material-symbols-outlined">dashboard</span>
-			<span>Dashboard</span>
-		</a>
-		<a class="footer-item" href="#checkin">
-			<span class="material-symbols-outlined">edit_note</span>
-			<span>Check-in</span>
-		</a>
-		<a class="footer-item" href="#kelp">
-			<span class="material-symbols-outlined">psychology</span>
-			<span>Coach</span>
-		</a>
-		<a class="footer-item" href="#sensor">
-			<span class="material-symbols-outlined">history</span>
-			<span>History</span>
-		</a>
-	</footer>
+	<section class="final-cta" id="pricing">
+		<div class="dot-grid"></div>
+		<div class="cta-content">
+			<h2>Start your journey today.</h2>
+			<p>
+				Join thousands of others finding their daily balance in the Sanctuary.
+			</p>
+			<a class="secondary-action" href="/app">Get Started for Free</a>
+		</div>
+	</section>
 </main>
+
+<footer class="site-footer">
+	<div class="footer-inner">
+		<div class="footer-brand">
+			<span>Sanctuary</span>
+			<p>© 2024 Sanctuary Wellness. Designed for Peace.</p>
+		</div>
+
+		<div class="footer-links">
+			{#each footerLinks as link}
+				<a href={link.href}>{link.label}</a>
+			{/each}
+		</div>
+	</div>
+</footer>
 
 <style>
 	:global(:root) {
-		--background: #f4f6ff;
 		--surface-container-lowest: #ffffff;
-		--secondary: #005da7;
-		--tertiary-container: #fcc025;
-		--surface-container-high: #d3e4ff;
-		--error: #b31b25;
-		--surface-container-highest: #c9deff;
-		--on-surface: #212f42;
-		--on-tertiary-container: #563e00;
-		--surface: #f4f6ff;
-		--surface-container: #dce9ff;
-		--surface-container-low: #eaf1ff;
-		--on-surface-variant: #4e5c71;
-		--primary-dim: #005a50;
-		--outline: #6a788d;
-		--primary: #00675c;
-		--on-primary: #c1fff2;
-		--primary-container: #5bf4de;
 		--on-secondary-container: #004884;
+		--surface-bright: #f4f6ff;
+		--secondary-fixed: #b7d3ff;
+		--tertiary-fixed-dim: #edb210;
+		--secondary-fixed-dim: #9fc6ff;
+		--primary-fixed: #5bf4de;
+		--primary-fixed-dim: #48e5d0;
+		--surface-container-low: #eaf1ff;
+		--tertiary-fixed: #fcc025;
+		--surface-container-high: #d3e4ff;
+		--on-secondary-fixed-variant: #005294;
+		--on-secondary: #eef3ff;
+		--inverse-on-surface: #8f9eb4;
+		--secondary: #005da7;
+		--error-dim: #9f0519;
+		--error-container: #fb5151;
+		--primary-container: #5bf4de;
+		--surface-tint: #00675c;
+		--on-tertiary-fixed-variant: #614700;
+		--outline: #6a788d;
+		--inverse-surface: #010f20;
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
-		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
-	}
-
-	:global(html) {
-		scroll-behavior: smooth;
+		--surface-container-highest: #c9deff;
+		--surface-variant: #c9deff;
+		--on-surface: #212f42;
+		--on-error: #ffefee;
+		--on-tertiary: #fff1db;
+		--surface-dim: #bfd6f9;
+		--on-primary-fixed-variant: #006358;
+		--error: #b31b25;
+		--on-background: #212f42;
+		--on-tertiary-container: #563e00;
+		--surface: #f4f6ff;
+		--tertiary: #755600;
+		--on-primary-fixed: #00443c;
+		--on-secondary-fixed: #003563;
+		--on-surface-variant: #4e5c71;
+		--on-tertiary-fixed: #3d2b00;
+		--on-error-container: #570008;
+		--tertiary-dim: #674b00;
+		--tertiary-container: #fcc025;
+		--inverse-primary: #65fde6;
+		--primary: #00675c;
+		--secondary-dim: #005192;
+		--surface-container: #dce9ff;
+		--background: #f4f6ff;
+		--primary-dim: #005a50;
+		--on-primary: #c1fff2;
+		--on-primary-container: #00594f;
 	}
 
 	:global(body) {
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.36), transparent 32%),
-			radial-gradient(circle at top right, rgba(183, 211, 255, 0.9), transparent 30%),
-			linear-gradient(180deg, #f8fbff 0%, var(--background) 40%, #edf4ff 100%);
-		color: var(--on-surface);
+			radial-gradient(circle at top left, rgba(91, 244, 222, 0.32), transparent 28%),
+			radial-gradient(circle at top right, rgba(252, 192, 37, 0.12), transparent 25%),
+			linear-gradient(180deg, #fbfdff 0%, var(--background) 45%, #eff5ff 100%);
+		color: var(--on-background);
 	}
 
 	:global(*) {
@@ -714,13 +217,12 @@
 	:global(.material-symbols-outlined) {
 		font-variation-settings:
 			'FILL' 0,
-			'wght' 500,
+			'wght' 400,
 			'GRAD' 0,
 			'opsz' 24;
 	}
 
-	.filled-icon,
-	.streak-icon {
+	.filled-icon {
 		font-variation-settings:
 			'FILL' 1,
 			'wght' 500,
@@ -728,842 +230,523 @@
 			'opsz' 24;
 	}
 
-	.app-shell {
-		display: grid;
-		grid-template-columns: 18rem minmax(0, 1fr);
-		gap: 1.5rem;
-		min-height: 100vh;
-		padding: 1.5rem;
+	.landing-shell {
+		padding: 0 1.5rem 6rem;
 	}
 
-	.kit-panel {
-		background: rgba(255, 255, 255, 0.76);
-		border: 1px solid rgba(160, 174, 197, 0.3);
-		border-radius: 2rem;
-		box-shadow: var(--shadow-soft);
-		backdrop-filter: blur(18px);
-	}
-
-	.mobile-topbar,
-	.mobile-footer {
-		display: none;
-	}
-
-	.sidebar {
+	.topbar {
 		position: sticky;
-		top: 1.5rem;
-		display: flex;
-		flex-direction: column;
-		gap: 1.5rem;
-		height: calc(100vh - 3rem);
-		padding: 1.5rem;
+		top: 0;
+		z-index: 50;
+		padding-top: 1rem;
 	}
 
-	.brand-kicker,
-	.meta-label {
-		margin: 0;
-		font-size: 0.76rem;
+	.topbar-inner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		max-width: 78rem;
+		margin: 0 auto;
+		padding: 1rem 1.4rem;
+		background: rgba(255, 255, 255, 0.48);
+		backdrop-filter: blur(18px);
+		border: 1px solid rgba(255, 255, 255, 0.6);
+		border-radius: 999px;
+		box-shadow: 0 10px 28px rgba(33, 47, 66, 0.08);
+	}
+
+	.brand {
+		font-size: 1.6rem;
 		font-weight: 800;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
+		letter-spacing: -0.06em;
+		color: #0f8a79;
+		text-decoration: none;
+	}
+
+	.nav-links {
+		display: flex;
+		align-items: center;
+		gap: 1.8rem;
+	}
+
+	.nav-links a,
+	.footer-links a,
+	.hero-actions p a {
+		color: var(--on-surface-variant);
+		text-decoration: none;
+		transition:
+			color 160ms ease,
+			transform 160ms ease,
+			border-color 160ms ease;
+	}
+
+	.nav-links a:hover,
+	.footer-links a:hover,
+	.hero-actions p a:hover {
 		color: var(--primary);
 	}
 
-	.brand-subtitle,
-	.helper-subtitle,
-	.section-copy,
-	.inline-hint,
-	.inline-status,
-	.saved-copy {
-		margin: 0;
-		color: var(--on-surface-variant);
-		line-height: 1.55;
-	}
-
-	.sidebar-title {
-		margin: 0.3rem 0 0;
-		font-size: 1.7rem;
-		line-height: 1.04;
-	}
-
-	.profile-card {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-		margin-top: 1.25rem;
-		padding: 1rem;
-		border-radius: 1.5rem;
-		background: var(--surface-container-low);
-	}
-
-	.avatar,
-	.hero-streak-icon,
-	.badge-icon,
-	.icon-button {
-		display: grid;
-		place-items: center;
-	}
-
-	.avatar {
-		width: 3rem;
-		height: 3rem;
-		border-radius: 999px;
-		background: linear-gradient(135deg, var(--primary), var(--primary-container));
-		color: white;
-		font-weight: 800;
-	}
-
-	.profile-title,
-	.profile-copy {
-		margin: 0;
-	}
-
-	.profile-title {
+	.nav-links a.active {
+		color: var(--primary);
 		font-weight: 700;
+		padding-bottom: 0.35rem;
+		border-bottom: 2px solid #14b8a6;
 	}
 
-	.profile-copy {
-		font-size: 0.9rem;
-		color: var(--on-surface-variant);
-	}
-
-	.nav-stack {
-		display: grid;
-		gap: 0.7rem;
-	}
-
-	.nav-item,
-	.footer-item {
-		display: flex;
+	.nav-cta,
+	.primary-action,
+	.secondary-action {
+		display: inline-flex;
 		align-items: center;
-		gap: 0.8rem;
-		padding: 0.95rem 1rem;
-		border-radius: 1.3rem;
-		color: var(--on-surface-variant);
+		justify-content: center;
+		gap: 0.6rem;
 		text-decoration: none;
-		font-weight: 700;
+		font-weight: 800;
 		transition:
 			transform 160ms ease,
-			background 160ms ease,
-			color 160ms ease,
-			box-shadow 160ms ease;
+			box-shadow 160ms ease,
+			filter 160ms ease;
 	}
 
-	.nav-item:hover,
-	.footer-item:hover {
-		transform: translateY(-1px);
-		background: rgba(201, 222, 255, 0.7);
-		color: var(--on-surface);
+	.nav-cta {
+		padding: 0.8rem 1.5rem;
+		border-radius: 999px;
+		background: var(--primary);
+		color: var(--on-primary);
 	}
 
-	.nav-item.is-active,
-	.footer-item.is-active {
-		background: linear-gradient(135deg, var(--primary), #138679);
-		color: white;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.28);
-	}
-
-	.sidebar-cta {
-		margin-top: auto;
-	}
-
-	.main-column {
-		display: grid;
-		gap: 1.5rem;
+	.nav-cta:hover,
+	.primary-action:hover,
+	.secondary-action:hover {
+		transform: translateY(-1px) scale(1.01);
+		filter: brightness(1.03);
 	}
 
 	.hero {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 1.2rem;
-		padding: 0.5rem 0.25rem 0;
+		max-width: 78rem;
+		margin: 0 auto;
+		padding-top: 4rem;
+		text-align: center;
 	}
 
 	.hero h1 {
 		margin: 0;
-		font-size: clamp(2.8rem, 6vw, 4.7rem);
+		font-size: clamp(3.2rem, 8vw, 6.4rem);
 		line-height: 0.95;
-		letter-spacing: -0.05em;
-		color: var(--primary);
+		letter-spacing: -0.06em;
 	}
 
-	.hero-copy {
-		margin-top: 0.5rem;
-		font-size: 1.1rem;
-		font-weight: 600;
+	.hero h1 span {
+		color: var(--primary);
+		font-style: italic;
+	}
+
+	.hero-copy p {
+		max-width: 42rem;
+		margin: 1.4rem auto 0;
+		font-size: clamp(1rem, 2vw, 1.25rem);
+		line-height: 1.7;
 		color: var(--on-surface-variant);
 	}
 
-	.hero-streak {
-		display: flex;
-		align-items: center;
+	.hero-stage {
+		position: relative;
+		overflow: hidden;
+		max-width: 64rem;
+		margin: 3rem auto 0;
+		aspect-ratio: 16 / 9;
+		border-radius: 1.6rem;
+		background:
+			linear-gradient(135deg, rgba(91, 244, 222, 0.18), rgba(244, 246, 255, 0.75), rgba(252, 192, 37, 0.1)),
+			var(--surface-container-low);
+		box-shadow: 0 24px 60px rgba(33, 47, 66, 0.12);
+	}
+
+	.hero-orb {
+		position: absolute;
+		border-radius: 999px;
+		filter: blur(55px);
+		opacity: 0.85;
+	}
+
+	.orb-left {
+		top: 3rem;
+		left: 3rem;
+		width: 8rem;
+		height: 8rem;
+		background: rgba(91, 244, 222, 0.45);
+	}
+
+	.orb-right {
+		right: 3rem;
+		bottom: 3rem;
+		width: 12rem;
+		height: 12rem;
+		background: rgba(252, 192, 37, 0.22);
+	}
+
+	.play-center {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		align-content: center;
 		gap: 1rem;
-		min-width: 15rem;
-		padding: 1rem 1.2rem;
-		background: rgba(211, 228, 255, 0.72);
 	}
 
-	.hero-streak-icon,
-	.badge-icon {
-		width: 3.35rem;
-		height: 3.35rem;
-		border-radius: 1.15rem;
+	.play-button {
+		display: grid;
+		place-items: center;
+		width: 6rem;
+		height: 6rem;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.65);
+		backdrop-filter: blur(14px);
+		color: var(--primary);
+		box-shadow: 0 16px 35px rgba(33, 47, 66, 0.12);
 	}
 
-	.hero-streak-icon {
-		background: var(--primary);
-		color: white;
+	.play-button .material-symbols-outlined {
+		font-size: 2.2rem;
 	}
 
-	.hero-streak-label,
-	.metric-label,
-	.saved-title {
+	.play-center p {
 		margin: 0;
 		font-size: 0.82rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
+		font-weight: 700;
+		letter-spacing: 0.14em;
 		text-transform: uppercase;
 		color: var(--on-surface-variant);
 	}
 
-	.hero-streak-value {
-		margin: 0.25rem 0 0;
-		font-size: 1.25rem;
-		font-weight: 800;
-		color: var(--primary);
+	.stage-frame {
+		position: absolute;
+		inset: 0;
+		border: 12px solid rgba(255, 255, 255, 0.45);
+		border-radius: 1.6rem;
+		pointer-events: none;
 	}
 
-	.kit-grid {
-		display: grid;
-		grid-template-columns: repeat(12, minmax(0, 1fr));
-		gap: 1.5rem;
-	}
-
-	.stress-card,
-	.checkin-card,
-	.sensor-card,
-	.helper-card {
-		padding: 1.8rem;
-	}
-
-	.stress-card {
-		grid-column: span 4;
-		background: linear-gradient(180deg, var(--primary) 0%, #00594f 100%);
-		color: var(--on-primary);
-		border-color: rgba(91, 244, 222, 0.28);
-		box-shadow: 0 16px 34px rgba(0, 90, 80, 0.24);
-	}
-
-	.checkin-card {
-		grid-column: span 8;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
-	}
-
-	.sensor-card {
-		grid-column: span 5;
-		background: rgba(255, 255, 255, 0.92);
-	}
-
-	.helper-card {
-		grid-column: span 7;
-		background: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
-	}
-
-	.card-topline,
-	.section-heading,
-	.helper-heading,
-	.score-row,
-	.action-row,
-	.metric-pair,
-	.inline-buttons,
-	.pill-row {
+	.hero-actions {
 		display: flex;
-	}
-
-	.card-topline,
-	.section-heading,
-	.action-row {
+		flex-direction: column;
 		align-items: center;
-		justify-content: space-between;
 		gap: 1rem;
+		margin-top: 3rem;
 	}
 
-	.helper-heading {
-		align-items: center;
-		gap: 0.9rem;
+	.primary-action {
+		padding: 1.2rem 2.8rem;
+		border-radius: 999px;
+		background: var(--primary);
+		color: var(--on-primary);
+		font-size: 1.15rem;
+		box-shadow: 0 4px 0 0 var(--primary-dim);
 	}
 
-	.section-heading h2,
-	.section-heading h3 {
+	.primary-action:active {
+		transform: translateY(4px);
+		box-shadow: 0 0 0 0 var(--primary-dim);
+	}
+
+	.hero-actions p {
 		margin: 0;
-		font-size: 2rem;
+		font-size: 0.95rem;
+		font-weight: 500;
+		color: var(--on-surface-variant);
+	}
+
+	.hero-actions p a {
+		color: var(--primary);
+		text-decoration: underline;
+		text-underline-offset: 0.25rem;
+		text-decoration-color: rgba(0, 103, 92, 0.25);
+	}
+
+	.bento-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1.5rem;
+		max-width: 78rem;
+		margin: 8rem auto 0;
+	}
+
+	.bento-card {
+		position: relative;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+		padding: 2.4rem;
+		border-radius: 1.6rem;
+		background: rgba(255, 255, 255, 0.78);
+		box-shadow: 0 18px 40px rgba(33, 47, 66, 0.08);
+	}
+
+	.bento-card h3 {
+		margin: 0 0 0.8rem;
+		font-size: clamp(1.5rem, 3vw, 2rem);
 		line-height: 1.05;
 	}
 
-	.score-row {
-		align-items: baseline;
-		gap: 0.35rem;
-		margin-top: 1rem;
-	}
-
-	.score-number,
-	.score-max {
+	.bento-card p {
 		margin: 0;
+		color: var(--on-surface-variant);
+		line-height: 1.65;
 	}
 
-	.score-number {
-		font-size: clamp(4rem, 8vw, 5.8rem);
-		font-weight: 800;
-		line-height: 0.95;
+	.bento-wide {
+		grid-column: span 2;
 	}
 
-	.score-max {
-		font-size: 1.25rem;
-		font-weight: 700;
-		opacity: 0.74;
+	.tag-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.7rem;
 	}
 
-	.pill-row {
-		margin: 1rem 0 1.2rem;
-	}
-
-	.pill,
-	.source-badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.45rem 0.8rem;
+	.tag-row span {
+		padding: 0.7rem 1rem;
 		border-radius: 999px;
-		font-size: 0.78rem;
+		background: var(--surface-container-high);
+		font-size: 0.72rem;
 		font-weight: 800;
-		letter-spacing: 0.08em;
+		letter-spacing: 0.14em;
 		text-transform: uppercase;
 	}
 
-	.pill {
-		background: rgba(91, 244, 222, 0.18);
-		color: #e8fffa;
-		border: 1px solid rgba(255, 255, 255, 0.16);
+	.card-bloom {
+		position: absolute;
+		right: -3rem;
+		bottom: -3rem;
+		width: 12rem;
+		height: 12rem;
+		border-radius: 999px;
+		background: rgba(0, 103, 92, 0.05);
+		transition: transform 400ms ease;
 	}
 
-	.coach-box {
-		padding: 1rem;
-		border-radius: 1.5rem;
-		background: rgba(0, 90, 80, 0.26);
+	.bento-card:hover .card-bloom {
+		transform: scale(1.25);
 	}
 
-	.coach-title {
-		margin: 0 0 0.3rem;
-		font-weight: 800;
+	.bento-tertiary {
+		background: var(--tertiary-container);
+		color: var(--on-tertiary-container);
 	}
 
-	.coach-copy,
-	.coach-caption {
-		margin: 0;
-		line-height: 1.55;
+	.bento-tertiary p,
+	.bento-tertiary h3 {
+		color: inherit;
 	}
 
-	.coach-caption {
-		margin-top: 0.5rem;
-		opacity: 0.82;
+	.bento-tertiary .material-symbols-outlined {
+		font-size: 2.5rem;
 	}
 
-	.status-group {
-		display: grid;
-		gap: 0.8rem;
-		margin-top: 1.2rem;
-	}
-
-	.output-panel {
-		margin: 1rem 0 0;
-		padding: 1rem;
-		white-space: pre-wrap;
-		background: rgba(0, 0, 0, 0.18);
-		border-radius: 1.25rem;
-		border: 1px solid rgba(255, 255, 255, 0.14);
-		font: 500 0.95rem/1.6 'Plus Jakarta Sans', sans-serif;
-		color: #f3fffc;
-	}
-
-	.slider-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 1rem;
-		margin-top: 1.25rem;
-	}
-
-	.slider-card,
-	.metric-card {
-		display: grid;
-		gap: 0.8rem;
-		padding: 1.1rem;
-		border-radius: 1.5rem;
-		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: rgba(255, 255, 255, 0.8);
-	}
-
-	.slider-title {
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		font-weight: 700;
-	}
-
-	.slider-scale {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-		font-size: 0.78rem;
-		color: var(--on-surface-variant);
-	}
-
-	.slider-scale strong {
-		font-size: 1rem;
-		color: var(--primary);
-	}
-
-	.field {
-		display: grid;
-		gap: 0.5rem;
-		margin-top: 1.1rem;
-	}
-
-	.field-label {
-		font-weight: 700;
-	}
-
-	.field input,
-	.persona-select select,
-	.message-input {
-		width: 100%;
-		border: 1px solid rgba(160, 174, 197, 0.38);
-		border-radius: 1.15rem;
-		padding: 0.95rem 1rem;
-		font: inherit;
-		color: var(--on-surface);
-		background: rgba(255, 255, 255, 0.88);
-	}
-
-	input[type='range'] {
-		width: 100%;
-		accent-color: var(--primary);
-	}
-
-	.action-row {
-		margin-top: 1.2rem;
-	}
-
-	.button,
-	.prompt-chip,
-	.icon-button,
-	.send-button {
-		border: none;
-		font: inherit;
-		cursor: pointer;
-		transition:
-			transform 160ms ease,
-			box-shadow 160ms ease,
-			background 160ms ease,
-			color 160ms ease;
-	}
-
-	.button {
-		display: inline-flex;
+	.bento-center {
 		align-items: center;
 		justify-content: center;
-		gap: 0.55rem;
-		padding: 0.95rem 1.35rem;
-		border-radius: 999px;
-		background: linear-gradient(135deg, var(--primary), #128d7f);
-		color: white;
-		font-weight: 800;
-		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+		text-align: center;
+		background: var(--surface-container-highest);
 	}
 
-	.button:hover,
-	.prompt-chip:hover,
-	.icon-button:hover,
-	.send-button:hover {
-		transform: translateY(-1px);
-	}
-
-	.button:active,
-	.prompt-chip:active,
-	.icon-button:active,
-	.send-button:active {
-		transform: translateY(2px);
-		box-shadow: none;
-	}
-
-	.button:disabled,
-	.send-button:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-		transform: none;
-		box-shadow: none;
-	}
-
-	.button-tertiary {
-		width: 100%;
-		background: linear-gradient(135deg, var(--tertiary-container), #ffd253);
-		color: var(--on-tertiary-container);
-		box-shadow: 0 6px 0 rgba(179, 139, 26, 0.26);
-	}
-
-	.button-outline {
-		width: 100%;
-		background: rgba(0, 103, 92, 0.06);
-		color: var(--primary);
-		border: 2px solid rgba(0, 103, 92, 0.18);
-		box-shadow: none;
-	}
-
-	.button-subtle {
-		background: rgba(201, 222, 255, 0.7);
-		color: var(--on-surface);
-		box-shadow: none;
-	}
-
-	.button-ghost-on-dark {
-		background: rgba(255, 255, 255, 0.1);
-		color: #f3fffc;
-		border: 1px solid rgba(255, 255, 255, 0.16);
-		box-shadow: none;
-	}
-
-	.saved-panel {
-		margin-top: 1rem;
-		padding: 1rem;
-		border-radius: 1.4rem;
-		background: rgba(211, 228, 255, 0.58);
-		border: 1px solid rgba(160, 174, 197, 0.24);
-	}
-
-	.saved-metrics {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.55rem;
-		margin: 0.7rem 0;
-	}
-
-	.saved-metrics span {
-		padding: 0.45rem 0.75rem;
+	.science-badge {
+		display: grid;
+		place-items: center;
+		width: 4rem;
+		height: 4rem;
 		border-radius: 999px;
 		background: white;
-		font-size: 0.8rem;
-		font-weight: 800;
 		color: var(--primary);
+		box-shadow: 0 10px 20px rgba(33, 47, 66, 0.08);
 	}
 
-	.metric-pair,
-	.inline-buttons {
-		gap: 0.9rem;
+	.bento-split {
+		flex-direction: row;
+		align-items: center;
+		gap: 2rem;
+		padding: 0.45rem;
+		background: white;
 	}
 
-	.metric-pair {
-		margin-top: 1.2rem;
-	}
-
-	.metric-card {
+	.split-copy {
 		flex: 1;
+		padding: 2rem;
+	}
+
+	.wireframe-panel {
+		flex: 1;
+		display: grid;
+		gap: 1rem;
+		padding: 2rem;
+		border-radius: 1.75rem;
+		background: var(--surface-container-low);
+	}
+
+	.wireframe-panel div {
+		height: 1rem;
+		border-radius: 999px;
 		background: var(--surface-container);
 	}
 
-	.metric-value {
+	.wireframe-panel div:nth-child(1) {
+		width: 74%;
+	}
+
+	.wireframe-panel div:nth-child(2) {
+		width: 52%;
+	}
+
+	.wireframe-panel div:nth-child(3) {
+		width: 84%;
+	}
+
+	.final-cta {
+		position: relative;
+		overflow: hidden;
+		max-width: 64rem;
+		margin: 8rem auto 0;
+		padding: 5rem 2rem;
+		border-radius: 1.7rem;
+		background: var(--primary);
+		color: var(--on-primary);
+		text-align: center;
+	}
+
+	.dot-grid {
+		position: absolute;
+		inset: 0;
+		opacity: 0.1;
+		background-image: radial-gradient(circle at 2px 2px, white 1px, transparent 0);
+		background-size: 24px 24px;
+	}
+
+	.cta-content {
+		position: relative;
+		z-index: 1;
+	}
+
+	.final-cta h2 {
 		margin: 0;
-		font-size: 2.3rem;
-		font-weight: 800;
-		color: var(--primary);
+		font-size: clamp(2.2rem, 5vw, 4rem);
+		line-height: 1;
 	}
 
-	.metric-value.secondary {
-		color: var(--secondary);
+	.final-cta p {
+		max-width: 38rem;
+		margin: 1.25rem auto 0;
+		font-size: 1.1rem;
+		line-height: 1.7;
+		color: rgba(193, 255, 242, 0.84);
 	}
 
-	.metric-value span {
-		font-size: 1rem;
-		font-weight: 700;
-	}
-
-	.stacked-actions {
-		display: grid;
-		gap: 0.85rem;
-		margin-top: 1.2rem;
-	}
-
-	.live-indicator {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.45rem 0.75rem;
+	.secondary-action {
+		margin-top: 2rem;
+		padding: 1rem 2.2rem;
 		border-radius: 999px;
-		background: rgba(179, 27, 37, 0.08);
-		color: var(--error);
-		font-size: 0.78rem;
-		font-weight: 800;
-		text-transform: uppercase;
-		letter-spacing: 0.08em;
-	}
-
-	.live-dot {
-		width: 0.55rem;
-		height: 0.55rem;
-		border-radius: 999px;
-		background: rgba(179, 27, 37, 0.3);
-	}
-
-	.dot-live {
-		background: var(--error);
-		animation: pulse 1.4s infinite;
-	}
-
-	.chat-shell {
-		display: grid;
-		gap: 0.8rem;
-		padding: 1rem;
-		margin-top: 1rem;
-		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.55);
-		min-height: 14rem;
-	}
-
-	.chat-bubble {
-		max-width: 85%;
-		padding: 0.95rem 1rem;
-		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
 		background: white;
-		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
+		color: var(--primary);
+		font-size: 1.05rem;
+		box-shadow: 0 18px 30px rgba(0, 0, 0, 0.15);
 	}
 
-	.chat-user {
-		margin-left: auto;
-		border-radius: 1.2rem 1.2rem 0.4rem 1.2rem;
-		background: linear-gradient(135deg, rgba(0, 103, 92, 0.12), rgba(91, 244, 222, 0.28));
+	.site-footer {
+		padding: 3rem 1.5rem;
+		background: #f8f7f4;
 	}
 
-	.chat-author {
-		margin: 0 0 0.25rem;
-		font-size: 0.76rem;
+	.footer-inner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 2rem;
+		max-width: 78rem;
+		margin: 0 auto;
+	}
+
+	.footer-brand {
+		display: grid;
+		gap: 0.35rem;
+	}
+
+	.footer-brand span {
+		font-size: 1.1rem;
 		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--on-surface-variant);
+		color: #0f8a79;
 	}
 
-	.chat-bubble p:last-child {
+	.footer-brand p {
 		margin: 0;
-		line-height: 1.55;
+		color: #78716c;
+		font-size: 0.92rem;
 	}
 
-	.prompt-row {
+	.footer-links {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.65rem;
-		margin-top: 1rem;
+		gap: 1.4rem;
 	}
 
-	.prompt-chip {
-		padding: 0.7rem 0.95rem;
-		border-radius: 999px;
-		background: white;
-		color: var(--primary);
-		font-size: 0.78rem;
-		font-weight: 800;
-		box-shadow: 0 6px 16px rgba(31, 47, 82, 0.06);
-	}
-
-	.message-row {
-		position: relative;
-		margin-top: 1rem;
-	}
-
-	.message-input {
-		padding-right: 4.2rem;
-		border-radius: 1.3rem;
-	}
-
-	.send-button {
-		position: absolute;
-		top: 0.55rem;
-		right: 0.55rem;
-		display: grid;
-		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		border-radius: 0.95rem;
-		background: var(--primary);
-		color: white;
-		box-shadow: 0 2px 0 rgba(0, 77, 69, 0.25);
-	}
-
-	.source-badge {
-		width: fit-content;
-		margin-top: 0.9rem;
-		border: 1px solid rgba(160, 174, 197, 0.34);
-	}
-
-	.source-badge.live {
-		background: rgba(91, 244, 222, 0.16);
-		color: var(--primary);
-	}
-
-	.source-badge.fallback {
-		background: rgba(252, 192, 37, 0.18);
-		color: var(--on-tertiary-container);
-	}
-
-	.inline-status.on-dark {
-		color: rgba(255, 255, 255, 0.88);
-	}
-
-	.level-low {
-		border-color: rgba(91, 244, 222, 0.28);
-	}
-
-	.level-rising {
-		border-color: rgba(252, 192, 37, 0.42);
-	}
-
-	.level-high {
-		border-color: rgba(251, 81, 81, 0.48);
-	}
-
-	.accent-primary {
-		background: rgba(91, 244, 222, 0.24);
-		color: var(--primary);
-	}
-
-	.accent-secondary {
-		color: var(--secondary);
-	}
-
-	.accent-tertiary {
-		color: #9d7400;
-	}
-
-	.badge-icon.accent-tertiary {
-		background: rgba(252, 192, 37, 0.3);
-		color: var(--on-tertiary-container);
-	}
-
-	.persona-select {
-		min-width: 12rem;
-	}
-
-	.icon-button {
-		width: 2.9rem;
-		height: 2.9rem;
-		border-radius: 999px;
-		background: white;
-		color: var(--primary);
-	}
-
-	.sr-only {
-		position: absolute;
-		width: 1px;
-		height: 1px;
-		padding: 0;
-		margin: -1px;
-		overflow: hidden;
-		clip: rect(0, 0, 0, 0);
-		white-space: nowrap;
-		border: 0;
-	}
-
-	@keyframes pulse {
-		0% {
-			box-shadow: 0 0 0 0 rgba(179, 27, 37, 0.4);
-		}
-
-		70% {
-			box-shadow: 0 0 0 8px rgba(179, 27, 37, 0);
-		}
-
-		100% {
-			box-shadow: 0 0 0 0 rgba(179, 27, 37, 0);
-		}
-	}
-
-	@media (max-width: 1080px) {
-		.app-shell {
-			grid-template-columns: 1fr;
-			padding: 1rem;
-		}
-
-		.sidebar {
+	@media (max-width: 960px) {
+		.nav-links {
 			display: none;
 		}
 
-		.mobile-topbar {
-			position: sticky;
-			top: 1rem;
-			z-index: 10;
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			padding: 1rem 1.2rem;
-		}
-
-		.kit-grid {
-			grid-template-columns: repeat(6, minmax(0, 1fr));
-			padding-bottom: 5.5rem;
-		}
-
-		.stress-card,
-		.checkin-card,
-		.sensor-card,
-		.helper-card {
-			grid-column: span 6;
-		}
-
-		.mobile-footer {
-			position: fixed;
-			left: 1rem;
-			right: 1rem;
-			bottom: 1rem;
-			z-index: 20;
-			display: grid;
-			grid-template-columns: repeat(4, 1fr);
-			padding: 0.65rem;
-		}
-
-		.footer-item {
-			flex-direction: column;
-			justify-content: center;
-			gap: 0.3rem;
-			font-size: 0.72rem;
-			padding: 0.7rem 0.35rem;
-		}
-	}
-
-	@media (max-width: 720px) {
-		.hero {
-			flex-direction: column;
-			align-items: stretch;
-		}
-
-		.hero h1 {
-			font-size: clamp(2.4rem, 12vw, 3.6rem);
-		}
-
-		.slider-grid {
+		.bento-grid {
 			grid-template-columns: 1fr;
 		}
 
-		.metric-pair,
-		.inline-buttons,
-		.section-heading,
-		.action-row {
+		.bento-wide {
+			grid-column: span 1;
+		}
+
+		.bento-split {
 			flex-direction: column;
-			align-items: stretch;
+			padding: 1.25rem;
 		}
 
-		.chat-bubble {
-			max-width: 100%;
+		.split-copy,
+		.wireframe-panel {
+			width: 100%;
+			padding: 1.25rem;
 		}
 
-		.persona-select {
+		.footer-inner {
+			flex-direction: column;
+			text-align: center;
+		}
+	}
+
+	@media (max-width: 640px) {
+		.landing-shell {
+			padding-inline: 1rem;
+		}
+
+		.topbar-inner {
+			padding: 0.9rem 1rem;
+		}
+
+		.nav-cta {
+			padding-inline: 1rem;
+		}
+
+		.hero {
+			padding-top: 2.4rem;
+		}
+
+		.hero-stage {
+			margin-top: 2rem;
+		}
+
+		.bento-card,
+		.final-cta {
+			padding-inline: 1.25rem;
+		}
+
+		.primary-action,
+		.secondary-action {
 			width: 100%;
 		}
 	}
