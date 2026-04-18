@@ -3,6 +3,18 @@
 </svelte:head>
 
 <script lang="ts">
+	import { page } from '$app/state';
+	import { onMount } from 'svelte';
+	import { supabase } from '$lib/supabase';
+	import type { Session, User } from '@supabase/supabase-js';
+
+	type SupabaseLikeError = {
+		message?: string;
+		details?: string;
+		hint?: string;
+		code?: string;
+	};
+
 	const navLinks = [
 		{ label: 'Features', href: '#features', active: true },
 		{ label: 'Science', href: '#science' },
@@ -16,12 +28,121 @@
 		{ label: 'Help Center', href: '#' },
 		{ label: 'Contact Us', href: '#' }
 	];
+
+	let currentSession = $state<Session | null>(null);
+	let currentUser = $state<User | null>(null);
+	let authStatus = $state('');
+	let isSigningOut = $state(false);
+
+	const pathname = $derived(page.url.pathname);
+	const displayName = $derived(getDisplayName(currentUser));
+	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
+
+	onMount(() => {
+		if (!supabase) {
+			return;
+		}
+
+		void supabase.auth.getSession().then(({ data, error }) => {
+			if (error) {
+				authStatus = describeError(error, 'Failed to restore session.');
+				return;
+			}
+
+			currentSession = data.session;
+			currentUser = data.session?.user ?? null;
+		});
+
+		const {
+			data: { subscription }
+		} = supabase.auth.onAuthStateChange((_event, session) => {
+			currentSession = session;
+			currentUser = session?.user ?? null;
+			authStatus = '';
+		});
+
+		return () => {
+			subscription.unsubscribe();
+		};
+	});
+
+	function describeError(error: unknown, fallback: string): string {
+		if (error instanceof Error && error.message) {
+			return error.message;
+		}
+
+		if (error && typeof error === 'object') {
+			const candidate = error as SupabaseLikeError;
+			const parts = [candidate.message, candidate.details, candidate.hint].filter(Boolean);
+			if (parts.length > 0) {
+				return parts.join(' ');
+			}
+
+			if (candidate.code) {
+				return `${fallback} (${candidate.code})`;
+			}
+		}
+
+		return fallback;
+	}
+
+	function getDisplayName(user: User | null): string {
+		if (!user) {
+			return 'Friend';
+		}
+
+		const metadata = user.user_metadata as Record<string, unknown> | undefined;
+		const fullName = typeof metadata?.full_name === 'string' ? metadata.full_name.trim() : '';
+		const name = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
+		const givenName = typeof metadata?.given_name === 'string' ? metadata.given_name.trim() : '';
+
+		if (givenName) {
+			return givenName;
+		}
+
+		if (fullName) {
+			return fullName.split(' ')[0] ?? fullName;
+		}
+
+		if (name) {
+			return name.split(' ')[0] ?? name;
+		}
+
+		if (user.email) {
+			return user.email.split('@')[0] ?? 'Friend';
+		}
+
+		return 'Friend';
+	}
+
+	async function signOut() {
+		if (!supabase || isSigningOut) {
+			return;
+		}
+
+		isSigningOut = true;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signOut();
+			if (error) {
+				throw error;
+			}
+
+			currentSession = null;
+			currentUser = null;
+		} catch (error) {
+			authStatus = describeError(error, 'Failed to sign out.');
+		} finally {
+			isSigningOut = false;
+		}
+	}
 </script>
 
 <main class="landing-shell">
 	<header class="topbar">
 		<nav class="topbar-inner">
-			<a class="brand" href="/">Sanctuary</a>
+			<a class="site-brand" href="/">Sanctuary</a>
 
 			<div class="nav-links" aria-label="Primary">
 				{#each navLinks as link}
@@ -29,8 +150,29 @@
 				{/each}
 			</div>
 
-			<a class="nav-cta" href="/app">Login</a>
+			{#if currentSession && currentUser}
+				<div class="site-actions">
+					{#if pathname !== '/app'}
+						<a class="nav-button nav-button-primary" href="/app">Dashboard</a>
+					{/if}
+					{#if pathname !== '/'}
+						<a class="nav-button nav-button-subtle" href="/">Home</a>
+					{/if}
+					<button class="nav-button nav-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
+						{isSigningOut ? 'Signing out...' : 'Sign out'}
+					</button>
+					<div class="user-chip" aria-label="Signed in user">
+						<span class="user-avatar">{avatarLetter}</span>
+						<span class="user-name">{displayName}</span>
+					</div>
+				</div>
+			{:else}
+				<a class="nav-button nav-button-primary" href="/app">Login</a>
+			{/if}
 		</nav>
+		{#if authStatus}
+			<p class="nav-status">{authStatus}</p>
+		{/if}
 	</header>
 
 	<section class="hero">
@@ -248,19 +390,48 @@
 		gap: 1rem;
 		max-width: 78rem;
 		margin: 0 auto;
-		padding: 1rem 1.4rem;
-		background: rgba(255, 255, 255, 0.48);
-		backdrop-filter: blur(18px);
-		border: 1px solid rgba(255, 255, 255, 0.6);
-		border-radius: 999px;
-		box-shadow: 0 10px 28px rgba(33, 47, 66, 0.08);
+		padding: 0.25rem 0;
 	}
 
-	.brand {
-		font-size: 1.6rem;
+	.site-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
+	.user-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.35rem 0.8rem 0.35rem 0.35rem;
+		border-radius: 999px;
+		background: var(--surface-container-low);
+	}
+
+	.user-avatar {
+		display: grid;
+		place-items: center;
+		width: 2.4rem;
+		height: 2.4rem;
+		border-radius: 999px;
+		background: linear-gradient(135deg, var(--primary), var(--primary-fixed-dim));
+		color: white;
 		font-weight: 800;
-		letter-spacing: -0.06em;
-		color: #0f8a79;
+		font-size: 0.95rem;
+	}
+
+	.user-name {
+		font-weight: 800;
+		color: var(--on-surface);
+	}
+
+	.site-brand {
+		font-size: 1.3rem;
+		font-weight: 800;
+		letter-spacing: 0.02em;
+		color: var(--primary);
 		text-decoration: none;
 	}
 
@@ -294,7 +465,7 @@
 		border-bottom: 2px solid #14b8a6;
 	}
 
-	.nav-cta,
+	.nav-button,
 	.primary-action,
 	.secondary-action {
 		display: inline-flex;
@@ -309,18 +480,45 @@
 			filter 160ms ease;
 	}
 
-	.nav-cta {
-		padding: 0.8rem 1.5rem;
+	.nav-button {
+		padding: 0.9rem 1.25rem;
 		border-radius: 999px;
-		background: var(--primary);
-		color: var(--on-primary);
+		box-shadow: none;
+		border: none;
+		font: inherit;
+		cursor: pointer;
 	}
 
-	.nav-cta:hover,
+	.nav-button-primary {
+		background: linear-gradient(135deg, var(--primary), #128d7f);
+		color: white;
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+	}
+
+	.nav-button-subtle {
+		background: rgba(201, 222, 255, 0.7);
+		color: var(--on-surface);
+	}
+
+	.nav-button-ghost {
+		background: transparent;
+		color: var(--on-surface-variant);
+		border: 1px solid rgba(160, 174, 197, 0.4);
+	}
+
+	.nav-button:hover,
 	.primary-action:hover,
 	.secondary-action:hover {
 		transform: translateY(-1px) scale(1.01);
 		filter: brightness(1.03);
+	}
+
+	.nav-status {
+		max-width: 78rem;
+		margin: 0.65rem auto 0;
+		padding: 0 0.4rem;
+		font-size: 0.92rem;
+		color: var(--on-surface-variant);
 	}
 
 	.hero {
@@ -690,8 +888,17 @@
 	}
 
 	@media (max-width: 960px) {
+		.topbar-inner {
+			flex-wrap: wrap;
+			justify-content: center;
+		}
+
 		.nav-links {
 			display: none;
+		}
+
+		.site-actions {
+			justify-content: center;
 		}
 
 		.bento-grid {
@@ -725,11 +932,17 @@
 		}
 
 		.topbar-inner {
-			padding: 0.9rem 1rem;
+			padding: 1rem;
 		}
 
-		.nav-cta {
+		.nav-button {
 			padding-inline: 1rem;
+		}
+
+		.site-actions,
+		.user-chip,
+		.nav-button {
+			width: 100%;
 		}
 
 		.hero {

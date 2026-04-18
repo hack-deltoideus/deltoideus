@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
@@ -91,6 +92,9 @@
 				: 'Action recommended'
 	);
 	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
+	const pathname = $derived(page.url.pathname);
+	const displayName = $derived(getDisplayName(currentUser));
+	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
@@ -141,6 +145,35 @@
 		}
 
 		return fallback;
+	}
+
+	function getDisplayName(user: User | null): string {
+		if (!user) {
+			return 'Friend';
+		}
+
+		const metadata = user.user_metadata as Record<string, unknown> | undefined;
+		const fullName = typeof metadata?.full_name === 'string' ? metadata.full_name.trim() : '';
+		const name = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
+		const givenName = typeof metadata?.given_name === 'string' ? metadata.given_name.trim() : '';
+
+		if (givenName) {
+			return givenName;
+		}
+
+		if (fullName) {
+			return fullName.split(' ')[0] ?? fullName;
+		}
+
+		if (name) {
+			return name.split(' ')[0] ?? name;
+		}
+
+		if (user.email) {
+			return user.email.split('@')[0] ?? 'Friend';
+		}
+
+		return 'Friend';
 	}
 
 	async function signInWithProvider(provider: OAuthProvider) {
@@ -447,16 +480,30 @@
 		</section>
 	</main>
 {:else}
-<main class="app-shell">
-	<header class="mobile-topbar kit-panel">
-		<div>
-			<p class="brand-kicker">Sanctuary</p>
-			<p class="brand-subtitle">Mental space</p>
+<header class="site-nav-shell">
+	<nav class="site-nav" aria-label="Global">
+		<a class="site-brand" href="/">Sanctuary</a>
+
+		<div class="site-actions">
+			{#if pathname !== '/app'}
+				<a class="nav-button nav-button-primary" href="/app">Dashboard</a>
+			{/if}
+			{#if pathname !== '/'}
+				<a class="nav-button nav-button-subtle" href="/">Home</a>
+			{/if}
+			<button class="nav-button nav-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
+				{isSigningOut ? 'Signing out...' : 'Sign out'}
+			</button>
+
+			<div class="user-chip" aria-label="Signed in user">
+				<span class="avatar user-avatar">{avatarLetter}</span>
+				<span class="user-name">{displayName}</span>
+			</div>
 		</div>
-		<button class="icon-button" type="button" aria-label="Profile">
-			<span class="material-symbols-outlined">account_circle</span>
-		</button>
-	</header>
+	</nav>
+</header>
+
+<main class="app-shell">
 
 	<aside class="sidebar kit-panel">
 		<div class="sidebar-block">
@@ -464,10 +511,10 @@
 			<h2 class="sidebar-title">Your calm command center</h2>
 
 			<div class="profile-card">
-				<div class="avatar">A</div>
+				<div class="avatar">{avatarLetter}</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{currentUser.email ?? 'Ready for your check-in?'}</p>
+					<p class="profile-copy">{displayName} · {currentUser.email ?? 'Ready for your check-in?'}</p>
 				</div>
 			</div>
 		</div>
@@ -491,14 +538,6 @@
 			</a>
 		</nav>
 
-		<div class="sidebar-cta">
-			<button class="button button-tertiary" type="button" onclick={generateGeminiPlan}>
-				Start Daily Goal
-			</button>
-			<button class="button button-subtle signout-button" type="button" onclick={signOut} disabled={isSigningOut}>
-				{isSigningOut ? 'Signing out...' : 'Sign out'}
-			</button>
-		</div>
 	</aside>
 
 	<div class="main-column">
@@ -886,7 +925,7 @@
 		grid-template-columns: 18rem minmax(0, 1fr);
 		gap: 1.5rem;
 		min-height: 100vh;
-		padding: 1.5rem;
+		padding: 1.25rem 1.5rem 1.5rem;
 	}
 
 	.auth-shell {
@@ -934,18 +973,98 @@
 		backdrop-filter: blur(18px);
 	}
 
-	.mobile-topbar,
 	.mobile-footer {
 		display: none;
 	}
 
+	.site-nav-shell {
+		position: sticky;
+		top: 0;
+		z-index: 80;
+		padding: 1.25rem 1.5rem 0;
+	}
+
+	.site-nav {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.25rem 0;
+	}
+
+	.site-brand {
+		font-size: 1.3rem;
+		font-weight: 800;
+		color: var(--primary);
+		text-decoration: none;
+		letter-spacing: 0.02em;
+	}
+
+	.site-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 0.8rem;
+		flex-wrap: wrap;
+	}
+
+	.user-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.7rem;
+		padding: 0.35rem 0.8rem 0.35rem 0.35rem;
+		border-radius: 999px;
+		background: var(--surface-container-low);
+	}
+
+	.user-avatar {
+		width: 2.4rem;
+		height: 2.4rem;
+		font-size: 0.95rem;
+	}
+
+	.user-name {
+		font-weight: 800;
+		color: var(--on-surface);
+	}
+
+	.nav-button {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0.9rem 1.25rem;
+		border-radius: 999px;
+		text-decoration: none;
+		font: inherit;
+		font-weight: 800;
+		cursor: pointer;
+		border: none;
+	}
+
+	.nav-button-primary {
+		background: linear-gradient(135deg, var(--primary), #128d7f);
+		color: white;
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+	}
+
+	.nav-button-subtle {
+		background: rgba(201, 222, 255, 0.7);
+		color: var(--on-surface);
+	}
+
+	.nav-button-ghost {
+		background: transparent;
+		color: var(--on-surface-variant);
+		border: 1px solid rgba(160, 174, 197, 0.4);
+	}
+
 	.sidebar {
 		position: sticky;
-		top: 1.5rem;
+		top: 6.65rem;
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
-		height: calc(100vh - 3rem);
+		height: calc(100vh - 8rem);
 		padding: 1.5rem;
 	}
 
@@ -1057,10 +1176,6 @@
 		margin-top: auto;
 		display: grid;
 		gap: 0.75rem;
-	}
-
-	.signout-button {
-		width: 100%;
 	}
 
 	.main-column {
@@ -1691,16 +1806,6 @@
 			display: none;
 		}
 
-		.mobile-topbar {
-			position: sticky;
-			top: 1rem;
-			z-index: 10;
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			padding: 1rem 1.2rem;
-		}
-
 		.kit-grid {
 			grid-template-columns: repeat(6, minmax(0, 1fr));
 			padding-bottom: 5.5rem;
@@ -1734,6 +1839,27 @@
 	}
 
 	@media (max-width: 720px) {
+		.site-nav-shell,
+		.auth-shell {
+			padding-inline: 1rem;
+		}
+
+		.site-nav {
+			border-radius: 1.5rem;
+			padding: 1rem;
+		}
+
+		.site-actions {
+			width: 100%;
+			justify-content: flex-start;
+		}
+
+		.user-chip,
+		.nav-button {
+			width: 100%;
+			justify-content: center;
+		}
+
 		.hero {
 			flex-direction: column;
 			align-items: stretch;
