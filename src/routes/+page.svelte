@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { onMount } from 'svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
+	import type { Session, User } from '@supabase/supabase-js';
 
 	type SavedCheckIn = {
 		id: string;
@@ -58,6 +60,8 @@
 		code?: string;
 	};
 
+	type OAuthProvider = 'google' | 'github';
+
 	let mood = $state(5);
 	let workload = $state(5);
 	let sleepQuality = $state(5);
@@ -86,6 +90,11 @@
 	let isSubmitting = $state(false);
 	let submitStatus = $state('');
 	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
+	let currentSession = $state<Session | null>(null);
+	let currentUser = $state<User | null>(null);
+	let authStatus = $state('');
+	let isSigningIn = $state<OAuthProvider | null>(null);
+	let isSigningOut = $state(false);
 	let isGeneratingPlan = $state(false);
 	let geminiPlan = $state('');
 	let geminiStatus = $state('');
@@ -132,6 +141,34 @@
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
 	}
 
+	onMount(() => {
+		if (!supabase) {
+			return;
+		}
+
+		void supabase.auth.getSession().then(({ data, error }) => {
+			if (error) {
+				authStatus = describeError(error, 'Failed to restore session.');
+				return;
+			}
+
+			currentSession = data.session;
+			currentUser = data.session?.user ?? null;
+		});
+
+		const {
+			data: { subscription }
+		} = supabase.auth.onAuthStateChange((_event, session) => {
+			currentSession = session;
+			currentUser = session?.user ?? null;
+			authStatus = session?.user ? '' : authStatus;
+		});
+
+		return () => {
+			subscription.unsubscribe();
+		};
+	});
+
 	function describeError(error: unknown, fallback: string): string {
 		if (error instanceof Error && error.message) {
 			return error.message;
@@ -169,9 +206,69 @@
 		liveSessionRrDiffCount = 0;
 	}
 
+	async function signInWithProvider(provider: OAuthProvider) {
+		if (!supabase || !browser || isSigningIn) {
+			return;
+		}
+
+		isSigningIn = provider;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signInWithOAuth({
+				provider,
+				options: {
+					redirectTo: window.location.origin
+				}
+			});
+
+			if (error) {
+				throw error;
+			}
+		} catch (error) {
+			authStatus = describeError(error, `Failed to sign in with ${provider}.`);
+		} finally {
+			isSigningIn = null;
+		}
+	}
+
+	async function signOut() {
+		if (!supabase || isSigningOut) {
+			return;
+		}
+
+		isSigningOut = true;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signOut();
+			if (error) {
+				throw error;
+			}
+
+			currentSession = null;
+			currentUser = null;
+			activeSensorSessionId = null;
+			activeSessionStartedAt = null;
+			lastSavedSensorSession = null;
+			lastSavedCheckIn = null;
+			sensorPersistenceStatus = '';
+			submitStatus = '';
+		} catch (error) {
+			authStatus = describeError(error, 'Failed to sign out.');
+		} finally {
+			isSigningOut = false;
+		}
+	}
+
 	async function startSensorSession(): Promise<string | null> {
 		if (!supabase) {
 			sensorPersistenceStatus = 'Sensor data is local only until Supabase is configured.';
+			return null;
+		}
+
+		if (!currentUser) {
+			sensorPersistenceStatus = 'Sign in first to start a session.';
 			return null;
 		}
 
@@ -188,7 +285,7 @@
 			const startedAt = new Date().toISOString();
 			const { data, error } = await supabase
 				.from('sensor_sessions')
-				.insert({ started_at: startedAt })
+				.insert({ user_id: currentUser.id, started_at: startedAt })
 				.select(
 					'id, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, rr_variability_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, session_summary'
 				)
@@ -416,6 +513,11 @@
 			return;
 		}
 
+		if (!currentUser) {
+			submitStatus = 'Sign in first to save a check-in.';
+			return;
+		}
+
 		isSubmitting = true;
 
 		try {
@@ -427,6 +529,7 @@
 				: null;
 
 			const checkInPayload = {
+				user_id: currentUser.id,
 				sensor_session_id: activeSensorSessionId,
 				mood,
 				workload,
@@ -460,6 +563,7 @@
 
 			if (stressLevel === 'rising' || stressLevel === 'high') {
 				const { error: interventionError } = await supabase.from('interventions').insert({
+					user_id: currentUser.id,
 					sensor_session_id: savedCheckIn.sensor_session_id,
 					check_in_id: savedCheckIn.id,
 					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
@@ -592,11 +696,40 @@
 
 <main class="shell">
 	<section class="hero">
-		<p class="eyebrow">Stress Buddy MVP</p>
-		<h1>Catch stress early. Trigger action now.</h1>
-		<p>
-			Live Polar H10 signal + 10-second student check-in + immediate intervention.
-		</p>
+		<div class="hero-top">
+			<div>
+				<p class="eyebrow">Stress Buddy MVP</p>
+				<h1>Catch stress early. Trigger action now.</h1>
+				<p>
+					Live Polar H10 signal + 10-second student check-in + immediate intervention.
+				</p>
+			</div>
+			<div class="auth-card">
+				<p class="label">Account</p>
+				{#if currentUser}
+					<p class="auth-copy">
+						Signed in as <strong>{currentUser.email ?? currentUser.id}</strong>
+					</p>
+					<button class="ghost" onclick={signOut} disabled={isSigningOut}>
+						{isSigningOut ? 'Signing out...' : 'Sign out'}
+					</button>
+				{:else}
+					<p class="auth-copy">Sign in to save sessions, check-ins, and interventions to your account.</p>
+					<div class="actions">
+						<button onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+							{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
+						</button>
+						<button class="ghost" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
+							{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
+						</button>
+					</div>
+				{/if}
+
+				{#if authStatus}
+					<p class="status">{authStatus}</p>
+				{/if}
+			</div>
+		</div>
 	</section>
 
 	<section class="grid">
@@ -633,7 +766,7 @@
 
 			<div class="actions session-actions">
 				{#if isSensorConnected && !activeSensorSessionId}
-					<button onclick={handleStartSession} disabled={isStartingSession || !hasSupabaseConfig}>
+					<button onclick={handleStartSession} disabled={isStartingSession || !hasSupabaseConfig || !currentUser}>
 						{isStartingSession ? 'Starting Session...' : 'Start Session'}
 					</button>
 				{/if}
@@ -695,9 +828,12 @@
 				</div>
 			{/if}
 
-			{#if !canUseBluetooth}
-				<p class="hint">Use Chrome or Edge over HTTPS/localhost for Web Bluetooth.</p>
-			{/if}
+				{#if !canUseBluetooth}
+					<p class="hint">Use Chrome or Edge over HTTPS/localhost for Web Bluetooth.</p>
+				{/if}
+				{#if !currentUser}
+					<p class="hint">Sign in before starting a session if you want sensor data saved to your account.</p>
+				{/if}
 		</article>
 
 		<article class="card checkin">
@@ -723,12 +859,16 @@
 				<input bind:value={stressor} placeholder="Exams, deadlines, social, sleep..." maxlength="120" />
 			</label>
 
-			<button onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig}>
+			<button onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig || !currentUser}>
 				{isSubmitting ? 'Saving...' : 'Save Check-in'}
 			</button>
 
 			{#if !hasSupabaseConfig}
 				<p class="hint">Set PUBLIC_SUPABASE_URL and PUBLIC_SUPABASE_ANON_KEY in .env.</p>
+			{/if}
+
+			{#if !currentUser}
+				<p class="hint">Sign in with OAuth to save check-ins to your account.</p>
 			{/if}
 
 			{#if submitStatus}
@@ -878,6 +1018,14 @@
 		letter-spacing: 0.02em;
 	}
 
+	.hero-top {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: space-between;
+		align-items: flex-start;
+		gap: 1rem;
+	}
+
 	.hero p {
 		margin: 0;
 		max-width: 52ch;
@@ -953,6 +1101,20 @@
 		font-size: 0.8rem;
 		color: #9ec8bc;
 		margin-bottom: 0.2rem;
+	}
+
+	.auth-card {
+		min-width: min(100%, 320px);
+		max-width: 360px;
+		padding: 1rem;
+		border-radius: 1rem;
+		background: rgba(7, 18, 30, 0.55);
+		border: 1px solid rgba(129, 212, 191, 0.18);
+	}
+
+	.auth-copy {
+		margin: 0 0 0.8rem;
+		color: #cae8df;
 	}
 
 	.saved-preview {

@@ -1,12 +1,13 @@
 # Supabase Full Migration
 
-Run this in Supabase SQL Editor to create or upgrade the current schema for sessions, check-ins, interventions, HRV fields, and policies.
+Run this in Supabase SQL Editor to create or upgrade the current schema for OAuth-backed users, sessions, check-ins, interventions, HRV fields, indexes, and RLS policies.
 
 ```sql
 create extension if not exists pgcrypto;
 
 create table if not exists public.sensor_sessions (
   id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz not null default now(),
   started_at timestamptz not null default now(),
   ended_at timestamptz,
@@ -22,6 +23,7 @@ create table if not exists public.sensor_sessions (
 );
 
 alter table public.sensor_sessions
+  add column if not exists user_id uuid,
   add column if not exists duration_seconds integer,
   add column if not exists avg_heart_rate numeric(6,2),
   add column if not exists avg_rr_ms numeric(7,2),
@@ -32,8 +34,24 @@ alter table public.sensor_sessions
   add column if not exists sample_count integer default 0,
   add column if not exists session_summary jsonb;
 
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'sensor_sessions_user_id_fkey'
+  ) then
+    alter table public.sensor_sessions
+      add constraint sensor_sessions_user_id_fkey
+      foreign key (user_id)
+      references auth.users(id)
+      on delete cascade;
+  end if;
+end $$;
+
 create table if not exists public.check_ins (
   id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz not null default now(),
   sensor_session_id uuid references public.sensor_sessions(id) on delete set null,
   mood smallint not null check (mood between 1 and 10),
@@ -49,12 +67,28 @@ create table if not exists public.check_ins (
 );
 
 alter table public.check_ins
+  add column if not exists user_id uuid,
   add column if not exists sensor_session_id uuid,
   add column if not exists heart_rate integer,
   add column if not exists rr_ms integer,
   add column if not exists hrv_ms numeric(7,2),
   add column if not exists session_elapsed_seconds integer,
   add column if not exists stressor text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'check_ins_user_id_fkey'
+  ) then
+    alter table public.check_ins
+      add constraint check_ins_user_id_fkey
+      foreign key (user_id)
+      references auth.users(id)
+      on delete cascade;
+  end if;
+end $$;
 
 do $$
 begin
@@ -74,8 +108,12 @@ end $$;
 create index if not exists check_ins_sensor_session_id_idx
   on public.check_ins(sensor_session_id);
 
+create index if not exists check_ins_user_id_idx
+  on public.check_ins(user_id);
+
 create table if not exists public.interventions (
   id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz not null default now(),
   sensor_session_id uuid references public.sensor_sessions(id) on delete set null,
   check_in_id uuid references public.check_ins(id) on delete set null,
@@ -85,11 +123,27 @@ create table if not exists public.interventions (
 );
 
 alter table public.interventions
+  add column if not exists user_id uuid,
   add column if not exists sensor_session_id uuid,
   add column if not exists check_in_id uuid,
   add column if not exists intervention_type text,
   add column if not exists trigger_level text,
   add column if not exists notes text;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'interventions_user_id_fkey'
+  ) then
+    alter table public.interventions
+      add constraint interventions_user_id_fkey
+      foreign key (user_id)
+      references auth.users(id)
+      on delete cascade;
+  end if;
+end $$;
 
 do $$
 begin
@@ -127,46 +181,64 @@ create index if not exists interventions_sensor_session_id_idx
 create index if not exists interventions_check_in_id_idx
   on public.interventions(check_in_id);
 
+create index if not exists interventions_user_id_idx
+  on public.interventions(user_id);
+
+create index if not exists sensor_sessions_user_id_idx
+  on public.sensor_sessions(user_id);
+
 alter table public.check_ins enable row level security;
 alter table public.sensor_sessions enable row level security;
 alter table public.interventions enable row level security;
 
 drop policy if exists "Allow public insert check_ins" on public.check_ins;
-create policy "Allow public insert check_ins"
+drop policy if exists "Users can insert own check_ins" on public.check_ins;
+create policy "Users can insert own check_ins"
   on public.check_ins for insert
-  to anon
-  with check (true);
+  to authenticated
+  with check (auth.uid() = user_id);
 
 drop policy if exists "Allow public insert interventions" on public.interventions;
-create policy "Allow public insert interventions"
+drop policy if exists "Users can insert own interventions" on public.interventions;
+create policy "Users can insert own interventions"
   on public.interventions for insert
-  to anon
-  with check (true);
+  to authenticated
+  with check (auth.uid() = user_id);
 
 drop policy if exists "Allow public insert sessions" on public.sensor_sessions;
-create policy "Allow public insert sessions"
+drop policy if exists "Users can insert own sessions" on public.sensor_sessions;
+create policy "Users can insert own sessions"
   on public.sensor_sessions for insert
-  to anon
-  with check (true);
+  to authenticated
+  with check (auth.uid() = user_id);
 
 drop policy if exists "Allow public update sessions" on public.sensor_sessions;
-create policy "Allow public update sessions"
+drop policy if exists "Users can update own sessions" on public.sensor_sessions;
+create policy "Users can update own sessions"
   on public.sensor_sessions for update
-  to anon
-  using (true)
-  with check (true);
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 drop policy if exists "Allow public read check_ins" on public.check_ins;
-create policy "Allow public read check_ins"
+drop policy if exists "Users can read own check_ins" on public.check_ins;
+create policy "Users can read own check_ins"
   on public.check_ins for select
-  to anon
-  using (true);
+  to authenticated
+  using (auth.uid() = user_id);
 
 drop policy if exists "Allow public read sessions" on public.sensor_sessions;
-create policy "Allow public read sessions"
+drop policy if exists "Users can read own sessions" on public.sensor_sessions;
+create policy "Users can read own sessions"
   on public.sensor_sessions for select
-  to anon
-  using (true);
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can read own interventions" on public.interventions;
+create policy "Users can read own interventions"
+  on public.interventions for select
+  to authenticated
+  using (auth.uid() = user_id);
 ```
 
 ## Notes
@@ -174,3 +246,4 @@ create policy "Allow public read sessions"
 - This file is intended to be safe for both fresh setups and existing projects that need additive upgrades.
 - The `do $$ ... $$;` blocks avoid re-adding foreign key constraints if they already exist.
 - `pgcrypto` is enabled so `gen_random_uuid()` works reliably.
+- OAuth providers must still be enabled in Supabase Auth, with the correct site URL and redirect URLs configured in the Supabase dashboard.
