@@ -19,8 +19,7 @@
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let helperQuestion = $state('I am overwhelmed with deadlines. What should I do in the next 10 minutes?');
-	let helperReply = $state('');
+	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
 	let helperSource = $state<'gemini' | 'fallback' | ''>('');
@@ -147,7 +146,6 @@
 
 	async function askGeminiHelper() {
 		helperStatus = '';
-		helperReply = '';
 		helperSource = '';
 
 		const question = helperQuestion.trim();
@@ -181,16 +179,17 @@
 				throw new Error(payload?.error ?? 'Failed to get helper response');
 			}
 
-			helperReply = payload.reply ?? '';
-			if (!helperReply) {
+			const reply = payload.reply ?? '';
+			if (!reply) {
 				throw new Error('Kelp returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
 				...nextHistory,
-				{ role: 'assistant', text: helperReply }
+				{ role: 'assistant', text: reply }
 			];
 			helperHistory = updatedHistory.slice(-12);
+			helperQuestion = '';
 			void scrollHelperToBottom();
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
 			helperStatus = payload?.warning ?? 'Kelp replied.';
@@ -289,11 +288,9 @@
 						</div>
 					{/each}
 				{:else}
-					<div class="chat-bubble chat-bubble-intro">
-						<p class="chat-author">Kelp</p>
-						<p>
-							Hello {displayName}! I can help you reset, organize a stressful moment, or turn a messy feeling into one clear next step.
-						</p>
+					<div class="chat-empty-state">
+						<p class="chat-empty-title">Start the conversation when you're ready.</p>
+						<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
 					</div>
 				{/if}
 
@@ -580,8 +577,32 @@
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.06);
 	}
 
-	.chat-bubble-intro {
-		max-width: 100%;
+	.chat-empty-state {
+		display: grid;
+		place-items: center;
+		align-content: center;
+		min-height: 100%;
+		padding: 1.25rem;
+		border: 1px dashed var(--field-border);
+		border-radius: 1.3rem;
+		text-align: center;
+		color: var(--on-surface-variant);
+	}
+
+	.chat-empty-title,
+	.chat-empty-copy {
+		margin: 0;
+	}
+
+	.chat-empty-title {
+		font-size: 1rem;
+		font-weight: 700;
+		color: var(--on-surface);
+	}
+
+	.chat-empty-copy {
+		margin-top: 0.35rem;
+		line-height: 1.55;
 	}
 
 	.chat-bubble-status {
