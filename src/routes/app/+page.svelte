@@ -543,7 +543,7 @@
 	<div class="main-column">
 		<section class="hero" id="dashboard">
 			<div>
-				<h1>Welcome back, Alex</h1>
+				<h1>Welcome back, {displayName}</h1>
 				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
 			</div>
 
@@ -776,7 +776,7 @@
 						<div class="chat-bubble">
 							<p class="chat-author">Kelp</p>
 							<p>
-								Hello Alex! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
+								Hello {displayName}! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
 							</p>
 						</div>
 					{/if}
