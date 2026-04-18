@@ -488,6 +488,10 @@
 				<span class="material-symbols-outlined">history</span>
 				<span>History</span>
 			</a>
+			<a class="nav-item" href="/app/calendar">
+				<span class="material-symbols-outlined">calendar_month</span>
+				<span>Calendar</span>
+			</a>
 		</nav>
 
 	</aside>
@@ -800,6 +804,10 @@
 			<span class="material-symbols-outlined">history</span>
 			<span>History</span>
 		</a>
+		<a class="footer-item" href="/app/calendar">
+			<span class="material-symbols-outlined">calendar_month</span>
+			<span>Calendar</span>
+		</a>
 	</footer>
 </main>
 {/if}
@@ -807,6 +815,11 @@
 <style>
 	:global(:root) {
 		--background: #f4f6ff;
+		--body-overlay-a: rgba(91, 244, 222, 0.36);
+		--body-overlay-b: rgba(183, 211, 255, 0.9);
+		--body-top: #f8fbff;
+		--body-bottom: #edf4ff;
+		--primary-glow: #6ef0e2;
 		--surface-container-lowest: #ffffff;
 		--secondary: #005da7;
 		--tertiary-container: #fcc025;
@@ -827,13 +840,32 @@
 		--on-secondary-container: #004884;
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
+		--panel-bg: rgba(255, 255, 255, 0.76);
+		--panel-border: rgba(160, 174, 197, 0.3);
+		--hero-streak-bg: rgba(211, 228, 255, 0.72);
+		--nav-hover-bg: rgba(201, 222, 255, 0.7);
+		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		--sensor-bg: rgba(255, 255, 255, 0.92);
+		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		--card-surface: rgba(255, 255, 255, 0.8);
+		--field-bg: rgba(255, 255, 255, 0.88);
+		--saved-panel-bg: rgba(211, 228, 255, 0.58);
+		--chat-shell-bg: rgba(255, 255, 255, 0.55);
+		--chat-bubble-bg: #ffffff;
+		--prompt-chip-bg: #ffffff;
+		--icon-button-bg: #ffffff;
 		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
 	}
 
 	:global(:root[data-theme='dark']) {
 		--background: #091521;
+		--body-overlay-a: rgba(74, 211, 188, 0.12);
+		--body-overlay-b: rgba(74, 128, 120, 0.16);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
+		--primary-glow: #59d9c2;
 		--surface-container-lowest: #0d1c2a;
-		--secondary: #8ac3ff;
+		--secondary: #7ebdb2;
 		--tertiary-container: #5e4600;
 		--surface-container-high: #173244;
 		--error: #ff8a95;
@@ -844,14 +876,28 @@
 		--surface-container: #122636;
 		--surface-container-low: #0f2231;
 		--on-surface-variant: #bacbdd;
-		--primary-dim: #49d7c9;
+		--primary-dim: #34b7a5;
 		--outline: #6f8396;
-		--primary: #67efe0;
+		--primary: #52d8c0;
 		--on-primary: #073a35;
 		--primary-container: #103f3a;
 		--on-secondary-container: #d9ebff;
 		--secondary-container: #1b455f;
 		--outline-variant: #465a6c;
+		--panel-bg: rgba(11, 24, 36, 0.82);
+		--panel-border: rgba(92, 111, 127, 0.32);
+		--hero-streak-bg: rgba(18, 38, 54, 0.9);
+		--nav-hover-bg: rgba(27, 69, 95, 0.44);
+		--checkin-bg: linear-gradient(180deg, rgba(12, 27, 40, 0.96), rgba(16, 34, 49, 0.98));
+		--sensor-bg: rgba(12, 27, 40, 0.95);
+		--helper-bg: linear-gradient(180deg, rgba(21, 42, 60, 0.96), rgba(14, 31, 45, 0.98));
+		--card-surface: rgba(15, 34, 49, 0.92);
+		--field-bg: rgba(16, 33, 46, 0.96);
+		--saved-panel-bg: rgba(18, 38, 54, 0.92);
+		--chat-shell-bg: rgba(10, 25, 37, 0.86);
+		--chat-bubble-bg: rgba(15, 34, 49, 0.96);
+		--prompt-chip-bg: rgba(15, 34, 49, 0.96);
+		--icon-button-bg: rgba(15, 34, 49, 0.96);
 		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
 	}
 
@@ -863,9 +909,9 @@
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.36), transparent 32%),
-			radial-gradient(circle at top right, rgba(183, 211, 255, 0.9), transparent 30%),
-			linear-gradient(180deg, #f8fbff 0%, var(--background) 40%, #edf4ff 100%);
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 32%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 30%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 40%, var(--body-bottom) 100%);
 		color: var(--on-surface);
 	}
 
@@ -936,8 +982,8 @@
 	}
 
 	.kit-panel {
-		background: rgba(255, 255, 255, 0.76);
-		border: 1px solid rgba(160, 174, 197, 0.3);
+		background: var(--panel-bg);
+		border: 1px solid var(--panel-border);
 		border-radius: 2rem;
 		box-shadow: var(--shadow-soft);
 		backdrop-filter: blur(18px);
@@ -965,6 +1011,14 @@
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
 		color: var(--primary);
+	}
+
+	.stress-card .meta-label {
+		color: rgba(232, 255, 250, 0.82);
+	}
+
+	:global(:root[data-theme='dark']) .stress-card .meta-label {
+		color: rgba(236, 245, 255, 0.78);
 	}
 
 	.brand-subtitle,
@@ -1050,7 +1104,7 @@
 	.nav-item:hover,
 	.footer-item:hover {
 		transform: translateY(-1px);
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 	}
 
@@ -1101,7 +1155,7 @@
 		gap: 1rem;
 		min-width: 15rem;
 		padding: 1rem 1.2rem;
-		background: rgba(211, 228, 255, 0.72);
+		background: var(--hero-streak-bg);
 	}
 
 	.hero-streak-icon,
@@ -1157,17 +1211,17 @@
 
 	.checkin-card {
 		grid-column: span 8;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		background: var(--checkin-bg);
 	}
 
 	.sensor-card {
 		grid-column: span 5;
-		background: rgba(255, 255, 255, 0.92);
+		background: var(--sensor-bg);
 	}
 
 	.helper-card {
 		grid-column: span 7;
-		background: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		background: var(--helper-bg);
 	}
 
 	.card-topline,
@@ -1299,7 +1353,7 @@
 		padding: 1.1rem;
 		border-radius: 1.5rem;
 		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: rgba(255, 255, 255, 0.8);
+		background: var(--card-surface);
 	}
 
 	.slider-title {
@@ -1342,7 +1396,7 @@
 		padding: 0.95rem 1rem;
 		font: inherit;
 		color: var(--on-surface);
-		background: rgba(255, 255, 255, 0.88);
+		background: var(--field-bg);
 	}
 
 	input[type='range'] {
@@ -1420,7 +1474,7 @@
 	}
 
 	.button-subtle {
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 		box-shadow: none;
 	}
@@ -1436,7 +1490,7 @@
 		margin-top: 1rem;
 		padding: 1rem;
 		border-radius: 1.4rem;
-		background: rgba(211, 228, 255, 0.58);
+		background: var(--saved-panel-bg);
 		border: 1px solid rgba(160, 174, 197, 0.24);
 	}
 
@@ -1450,7 +1504,7 @@
 	.saved-metrics span {
 		padding: 0.45rem 0.75rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--card-surface);
 		font-size: 0.8rem;
 		font-weight: 800;
 		color: var(--primary);
@@ -1524,7 +1578,7 @@
 		padding: 1rem;
 		margin-top: 1rem;
 		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.55);
+		background: var(--chat-shell-bg);
 		min-height: 14rem;
 	}
 
@@ -1532,7 +1586,7 @@
 		max-width: 85%;
 		padding: 0.95rem 1rem;
 		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
-		background: white;
+		background: var(--chat-bubble-bg);
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
 	}
 
@@ -1593,7 +1647,7 @@
 	.prompt-chip {
 		padding: 0.7rem 0.95rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--prompt-chip-bg);
 		color: var(--primary);
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -1682,8 +1736,53 @@
 		width: 2.9rem;
 		height: 2.9rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--icon-button-bg);
 		color: var(--primary);
+	}
+
+	:global(:root[data-theme='dark']) .site-nav-shell {
+		background: linear-gradient(180deg, rgba(7, 17, 26, 0.92), rgba(7, 17, 26, 0));
+	}
+
+	:global(:root[data-theme='dark']) .nav-item,
+	:global(:root[data-theme='dark']) .footer-item {
+		color: #d6e6f5;
+	}
+
+	:global(:root[data-theme='dark']) .nav-item.is-active,
+	:global(:root[data-theme='dark']) .footer-item.is-active {
+		box-shadow: 0 6px 0 rgba(11, 51, 46, 0.5);
+	}
+
+	:global(:root[data-theme='dark']) .stress-card {
+		border-color: rgba(103, 239, 224, 0.28);
+		box-shadow: 0 16px 34px rgba(2, 14, 20, 0.44);
+	}
+
+	:global(:root[data-theme='dark']) .slider-card,
+	:global(:root[data-theme='dark']) .metric-card,
+	:global(:root[data-theme='dark']) .saved-metrics span,
+	:global(:root[data-theme='dark']) .prompt-chip,
+	:global(:root[data-theme='dark']) .chat-bubble,
+	:global(:root[data-theme='dark']) .icon-button {
+		border-color: rgba(70, 90, 108, 0.38);
+		box-shadow: none;
+	}
+
+	:global(:root[data-theme='dark']) .slider-scale,
+	:global(:root[data-theme='dark']) .chat-author,
+	:global(:root[data-theme='dark']) .profile-copy,
+	:global(:root[data-theme='dark']) .hero-streak-label {
+		color: #bacbdd;
+	}
+
+	:global(:root[data-theme='dark']) .button-ghost-on-dark {
+		background: rgba(255, 255, 255, 0.08);
+		color: #edf5ff;
+	}
+
+	:global(:root[data-theme='dark']) .chat-empty-state {
+		border-color: rgba(70, 90, 108, 0.5);
 	}
 
 	.sr-only {
