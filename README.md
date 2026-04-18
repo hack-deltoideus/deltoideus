@@ -2,11 +2,11 @@
 
 ## Hackathon MVP: Stress Buddy
 
-Stress Buddy combines quick self check-ins with Polar H10 heart-rate data to catch rising stress and trigger immediate action.
+Stress Buddy combines quick self check-ins with Polar H9 heart-rate data to catch rising stress and trigger immediate action.
 
 ## MVP scope
 
-- Connect to a Polar H10 over Bluetooth LE (Web Bluetooth)
+- Connect to a Polar H9 over Bluetooth LE (Web Bluetooth)
 - Display live heart rate and RR interval
 - Persist one timestamped JSON summary per sensor session into Supabase, including average heart rate and RR variability
 - Attach each check-in to the active sensor session when one exists
@@ -18,7 +18,7 @@ Stress Buddy combines quick self check-ins with Polar H10 heart-rate data to cat
 ## Stack
 
 - SvelteKit + TypeScript
-- Web Bluetooth API for Polar H10 heart-rate stream
+- Web Bluetooth API for Polar H9 heart-rate stream
 - Supabase Postgres (and optional Auth later)
 
 ## Quick start
@@ -72,12 +72,11 @@ npm run dev -- --open
 
 ## Demo script (60 seconds)
 
-1. Connect Polar H10 (or click `Simulate Spike`)
-2. Click `Start Session`
-3. Show live session averages / variability updating in real time
-4. Click `End Session` to save the timestamped session JSON
-5. Set mood, workload, sleep sliders
-6. Save check-in to Supabase
+1. Connect Polar H9 (or click `Simulate Spike`)
+2. Set mood, workload, sleep sliders
+3. Show stress level changes in real time
+4. Save check-in to Supabase
+5. Show inserted rows in `check_ins` and `interventions`
 
 ## Notes
 
