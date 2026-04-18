@@ -1,0 +1,19 @@
+{
+  "_comment": "Copilot agent configuration defaults for this repository.",
+  "permissions": {
+    "defaultMode": "ask",
+    "_comment_defaultMode": "Options: dontAsk | ask | denyAll. ask is a safer default for shared repos."
+  },
+  "model": "claude-sonnet-4-6",
+  "_comment_model": "Replace with any Copilot-supported model alias your account can use.",
+  "hooks": {
+    "_comment": "Hook script paths are relative to this repo root. See config/hooks.md.",
+    "PreToolUse": [],
+    "PostToolUse": [],
+    "PostToolUseFailure": []
+  },
+  "mcp": {
+    "_comment": "Add MCP server definitions here when needed.",
+    "servers": {}
+  }
+}

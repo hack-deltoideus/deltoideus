@@ -1,0 +1,19 @@
+{
+  "_comment": "Copilot agent configuration defaults. Copy to .copilot-agent.json at the repo root and edit to taste.",
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "_comment_defaultMode": "Options: dontAsk | ask | denyAll. dontAsk allows workspace-write without prompts; use ask for higher-blast-radius repos."
+  },
+  "model": "claude-sonnet-4-6",
+  "_comment_model": "Override with any model alias or full model name supported by your Copilot plan.",
+  "hooks": {
+    "_comment": "Hooks run shell scripts at agent lifecycle points. Paths are relative to the repo root. See config/hooks.md for details.",
+    "PreToolUse": [],
+    "PostToolUse": [],
+    "PostToolUseFailure": []
+  },
+  "mcp": {
+    "_comment": "Add MCP server definitions here. Each key is a logical server name.",
+    "servers": {}
+  }
+}
