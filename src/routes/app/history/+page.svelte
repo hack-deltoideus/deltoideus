@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
+	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
@@ -14,102 +15,117 @@
 
 	type OAuthProvider = 'google';
 
-	type TrendPoint = {
-		day: string;
+	type SessionSegment = {
+		index: number;
+		startedAt: string;
+		endedAt: string;
+		durationSeconds: number;
+		sampleCount: number;
+		averageHeartRate: number | null;
+		averageRrMs: number | null;
+		averageHrvMs: number | null;
+	};
+
+	type SessionSummaryPayload = {
+		sessionId: string;
+		userId: string;
+		deviceInfo: {
+			name: string;
+		} | null;
+		captureType: string;
+		startedAt: string;
+		endedAt: string;
+		durationSeconds: number;
+		sampleCount: number;
+		averageHeartRate: number | null;
+		averageRrMs: number | null;
+		averageHrvMs: number | null;
+		lastHrvMs: number | null;
+		maxHeartRate: number | null;
+		segmentLengthSeconds: number;
+		segments: SessionSegment[];
+	};
+
+	type SensorSessionRecord = {
+		id: string;
+		created_at: string;
+		started_at: string;
+		ended_at: string | null;
+		duration_seconds: number | null;
+		avg_heart_rate: number | null;
+		avg_hrv_ms: number | null;
+		device_name: string | null;
+		capture_type: string | null;
+		summary_payload: SessionSummaryPayload | null;
+	};
+
+	type SessionCard = {
+		id: string;
+		dateLabel: string;
+		timeLabel: string;
+		activityLabel: string;
+		durationLabel: string;
+		durationSeconds: number;
+		avgHeartRate: number | null;
+		avgHrvMs: number | null;
+		deviceLabel: string;
+		segments: SessionSegment[];
+	};
+
+	type ChartPoint = {
+		label: string;
 		value: number;
-	};
-
-	type HistoryEntry = {
-		time: string;
-		title: string;
-		icon: string;
-		tone?: 'calm' | 'alert' | 'muted';
-		tags: string[];
-		path: string;
-	};
-
-	type HistoryGroup = {
-		dayLabel: string;
-		summary: string;
-		moodIcon: string;
-		tone: 'calm' | 'alert' | 'balanced';
-		entries?: HistoryEntry[];
-		collapsedNote?: string;
+		display: string;
 	};
 
 	let currentSession = $state<Session | null>(null);
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
+	let historyStatus = $state('');
+	let isLoadingHistory = $state(false);
+	let selectedDate = $state('');
+	let historySessions = $state<SensorSessionRecord[]>([]);
 
 	const displayName = $derived(getDisplayName(currentUser));
-	const streakDays = 12;
+	const availableDates = $derived(
+		Array.from(
+			new Set(
+				historySessions.map((session) => getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at))
+			)
+		).sort((a, b) => b.localeCompare(a))
+	);
+	const filteredSessions = $derived(
+		historySessions.filter((session) => {
+			if (!selectedDate) {
+				return true;
+			}
 
-	const trendPoints: TrendPoint[] = [
-		{ day: 'Mon', value: 74 },
-		{ day: 'Tue', value: 38 },
-		{ day: 'Wed', value: 58 },
-		{ day: 'Thu', value: 26 },
-		{ day: 'Fri', value: 48 },
-		{ day: 'Sat', value: 34 },
-		{ day: 'Sun', value: 16 }
-	];
-
-	const historyGroups: HistoryGroup[] = [
-		{
-			dayLabel: 'Yesterday',
-			summary: 'Daily average: Focused and happy',
-			moodIcon: 'sentiment_very_satisfied',
-			tone: 'calm',
-			entries: [
-				{
-					time: '2:30 PM',
-					title: 'Deep Focus Session',
-					icon: 'bolt',
-					tags: ['15m Flow', 'HR 62 bpm'],
-					path: 'M0,28 L24,22 L48,30 L72,10 L96,18 L120,6 L144,24 L168,14 L192,28 L216,12 L240,18'
-				},
-				{
-					time: '10:15 AM',
-					title: 'Morning Mindfulness',
-					icon: 'self_improvement',
-					tags: ['Calm Breath'],
-					path: 'M0,20 Q60,2 120,18 T240,20'
-				}
-			]
-		},
-		{
-			dayLabel: 'October 24',
-			summary: 'Daily average: High stress',
-			moodIcon: 'sentiment_dissatisfied',
-			tone: 'alert',
-			entries: [
-				{
-					time: '4:45 PM',
-					title: 'Anxiety Spike',
-					icon: 'warning',
-					tone: 'alert',
-					tags: ['Immediate action required'],
-					path: 'M0,30 L18,4 L36,30 L54,4 L72,30 L90,4 L108,30 L126,4 L144,30 L162,4 L240,4'
-				},
-				{
-					time: '8:00 AM',
-					title: 'Neutral Wake-up',
-					icon: 'bedtime',
-					tone: 'muted',
-					tags: ['7h Sleep'],
-					path: 'M0,20 L240,20'
-				}
-			]
-		},
-		{
-			dayLabel: 'October 23',
-			summary: 'Daily average: Balanced',
-			moodIcon: 'sentiment_neutral',
-			tone: 'balanced',
-			collapsedNote: '3 logs recorded on this day. Tap to expand history.'
-		}
-	];
+			return getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate;
+		})
+	);
+	const sessionCards = $derived(filteredSessions.map(toSessionCard));
+	const averageHeartRate = $derived(averageMetric(sessionCards, 'avgHeartRate'));
+	const averageHrv = $derived(averageMetric(sessionCards, 'avgHrvMs'));
+	const averageDurationSeconds = $derived(
+		sessionCards.length > 0
+			? Math.round(sessionCards.reduce((total, session) => total + session.durationSeconds, 0) / sessionCards.length)
+			: 0
+	);
+	const heartRateChart = $derived(
+		sessionCards.map((session, index) => ({
+			label: `S${index + 1}`,
+			value: session.avgHeartRate ?? 0,
+			display: `${formatMetric(session.avgHeartRate, 1)} bpm`
+		}))
+	);
+	const hrvChart = $derived(
+		sessionCards.map((session, index) => ({
+			label: `S${index + 1}`,
+			value: session.avgHrvMs ?? 0,
+			display: `${formatMetric(session.avgHrvMs, 1)} ms`
+		}))
+	);
 
 	onMount(() => {
 		if (!supabase) {
@@ -124,6 +140,9 @@
 
 			currentSession = data.session;
 			currentUser = data.session?.user ?? null;
+			if (data.session?.user) {
+				void loadHistorySessions(data.session.user.id);
+			}
 		});
 
 		const {
@@ -132,6 +151,12 @@
 			currentSession = session;
 			currentUser = session?.user ?? null;
 			authStatus = '';
+			if (session?.user) {
+				void loadHistorySessions(session.user.id);
+			} else {
+				historySessions = [];
+				selectedDate = '';
+			}
 		});
 
 		return () => {
@@ -214,20 +239,149 @@
 		}
 	}
 
-	function trendPath(points: TrendPoint[]): string {
-		return points
-			.map((point, index) => {
-				const x = index * 120;
-				const y = 180 - point.value * 2;
-				return `${index === 0 ? 'M' : 'L'}${x},${y}`;
-			})
+	async function loadHistorySessions(userId: string) {
+		if (!supabase) {
+			return;
+		}
+
+		isLoadingHistory = true;
+		historyStatus = '';
+
+		try {
+			const { data, error } = await supabase
+				.from('sensor_sessions')
+				.select(
+					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_hrv_ms, device_name, capture_type, summary_payload'
+				)
+				.contains('summary_payload', { userId })
+				.order('started_at', { ascending: false })
+				.limit(60);
+
+			if (error) {
+				throw error;
+			}
+
+			historySessions = ((data ?? []) as SensorSessionRecord[]).filter(
+				(session) => session.summary_payload?.userId === userId
+			);
+
+			if (selectedDate && !historySessions.some((session) => getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate)) {
+				selectedDate = '';
+			}
+		} catch (error) {
+			historyStatus = describeError(error, 'Failed to load history sessions.');
+		} finally {
+			isLoadingHistory = false;
+		}
+	}
+
+	function getSessionDateValue(dateString: string): string {
+		return new Date(dateString).toISOString().slice(0, 10);
+	}
+
+	function formatDateLabel(dateValue: string): string {
+		return new Date(`${dateValue}T12:00:00`).toLocaleDateString([], {
+			month: 'long',
+			day: 'numeric',
+			year: 'numeric'
+		});
+	}
+
+	function formatTimeLabel(dateString: string): string {
+		return new Date(dateString).toLocaleTimeString([], {
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+	}
+
+	function formatMetric(value: number | null | undefined, digits = 0): string {
+		if (typeof value !== 'number' || Number.isNaN(value)) {
+			return '--';
+		}
+
+		return value.toFixed(digits);
+	}
+
+	function formatDuration(durationSeconds: number): string {
+		if (!durationSeconds) {
+			return '--';
+		}
+
+		const hours = Math.floor(durationSeconds / 3600);
+		const minutes = Math.floor((durationSeconds % 3600) / 60);
+
+		if (hours > 0) {
+			return `${hours}h ${minutes}m`;
+		}
+
+		return `${Math.max(1, minutes)}m`;
+	}
+
+	function formatActivityLabel(value: string | null | undefined): string {
+		if (!value) {
+			return 'Sensor Session';
+		}
+
+		return value
+			.split(/[_-]+/)
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
 			.join(' ');
 	}
 
-	function trendAreaPath(points: TrendPoint[]): string {
-		const line = trendPath(points);
-		const maxX = (points.length - 1) * 120;
-		return `${line} L${maxX},200 L0,200 Z`;
+	function toSessionCard(session: SensorSessionRecord): SessionCard {
+		const payload = session.summary_payload;
+		const startedAt = payload?.startedAt ?? session.started_at;
+		const durationSeconds = payload?.durationSeconds ?? session.duration_seconds ?? 0;
+		const avgHeartRate = payload?.averageHeartRate ?? session.avg_heart_rate ?? null;
+		const avgHrvMs = payload?.averageHrvMs ?? session.avg_hrv_ms ?? null;
+
+		return {
+			id: session.id,
+			dateLabel: formatDateLabel(getSessionDateValue(startedAt)),
+			timeLabel: formatTimeLabel(startedAt),
+			activityLabel: formatActivityLabel(payload?.captureType ?? session.capture_type),
+			durationLabel: formatDuration(durationSeconds),
+			durationSeconds,
+			avgHeartRate,
+			avgHrvMs,
+			deviceLabel: payload?.deviceInfo?.name ?? session.device_name ?? 'Unknown device',
+			segments: payload?.segments ?? []
+		};
+	}
+
+	function averageMetric(sessions: SessionCard[], key: 'avgHeartRate' | 'avgHrvMs'): number | null {
+		const values = sessions
+			.map((session) => session[key])
+			.filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
+
+		if (values.length === 0) {
+			return null;
+		}
+
+		return values.reduce((total, value) => total + value, 0) / values.length;
+	}
+
+	function barHeight(value: number, maxValue: number): number {
+		if (!maxValue || value <= 0) {
+			return 8;
+		}
+
+		return Math.max(8, (value / maxValue) * 100);
+	}
+
+	function segmentChartPath(segments: SessionSegment[]): string {
+		if (segments.length === 0) {
+			return '';
+		}
+
+		return segments
+			.map((segment, index) => {
+				const x = segments.length === 1 ? 0 : (index / (segments.length - 1)) * 100;
+				const metric = segment.averageHeartRate ?? 0;
+				const y = 100 - Math.min(100, metric);
+				return `${index === 0 ? 'M' : 'L'}${x},${y}`;
+			})
+			.join(' ');
 	}
 </script>
 
@@ -236,12 +390,13 @@
 </svelte:head>
 
 {#if !currentUser}
+	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-card">
 			<p class="eyebrow">History</p>
-			<h1>Sign in to see your journey.</h1>
+			<h1>Sign in to review your session history.</h1>
 			<p class="auth-copy">
-				Your history page groups past check-ins, highlights stress trends, and keeps your progress easy to revisit.
+				History shows your saved sensor sessions with date filters, heart-rate trends, average HRV, duration, and tracked activity.
 			</p>
 
 			<div class="auth-actions">
@@ -261,155 +416,233 @@
 		</section>
 	</main>
 {:else}
+	<SiteNav />
 	<main class="history-page">
 		<section class="history-frame">
 			<header class="page-head">
 				<div>
-					<p class="eyebrow">Your Journey</p>
-					<h1>Looking back at your growth and resilience.</h1>
+					<p class="eyebrow">History</p>
+					<h1>Session history for {displayName}</h1>
+					<p class="page-copy">Filter by session date and review clear summaries for heart rate, HRV, duration, and tracked activity.</p>
 				</div>
-				<div class="head-actions">
-					<div class="streak-card">
-						<div class="streak-icon">
-							<span class="material-symbols-outlined">celebration</span>
-						</div>
-						<div>
-							<p>Daily Streak</p>
-							<strong>{streakDays} DAYS</strong>
-						</div>
-					</div>
+
+				<div class="filter-card">
+					<label class="field">
+						<span class="field-label">Filter by date</span>
+						<select bind:value={selectedDate}>
+							<option value="">All sessions</option>
+							{#each availableDates as dateValue}
+								<option value={dateValue}>{formatDateLabel(dateValue)}</option>
+							{/each}
+						</select>
+					</label>
+					<p class="filter-copy">
+						{filteredSessions.length} session{filteredSessions.length === 1 ? '' : 's'} shown
+					</p>
 				</div>
 			</header>
 
 			<AppSectionNav />
 
-			<section class="journey-main">
-				<section class="trend-card">
+			{#if historyStatus}
+				<p class="inline-status">{historyStatus}</p>
+			{/if}
+
+			<section class="overview-grid">
+				<article class="stat-card">
+					<p class="stat-label">Average Heart Rate</p>
+					<p class="stat-value">{formatMetric(averageHeartRate, 1)} <span>BPM</span></p>
+				</article>
+				<article class="stat-card">
+					<p class="stat-label">Average HRV</p>
+					<p class="stat-value">{formatMetric(averageHrv, 1)} <span>MS</span></p>
+				</article>
+				<article class="stat-card">
+					<p class="stat-label">Average Session Length</p>
+					<p class="stat-value">{formatDuration(averageDurationSeconds)}</p>
+				</article>
+			</section>
+
+			<section class="chart-grid">
+				<article class="chart-card">
 					<div class="section-heading">
 						<div>
-							<h3>Stress Trends</h3>
-							<p>Last 7 days progression</p>
-						</div>
-						<div class="trend-actions">
-							<span class="view-chip">Weekly View</span>
-							<a class="calendar-link" href="/app/calendar" aria-label="Open calendar view">
-								<span class="material-symbols-outlined">calendar_month</span>
-							</a>
+							<h2>Heart rate by session</h2>
+							<p>Average BPM for each saved session in the current filter.</p>
 						</div>
 					</div>
 
-					<div class="chart-shell">
-						<svg class="trend-chart" viewBox="0 0 720 200" preserveAspectRatio="none" aria-label="Stress trend chart">
-							<defs>
-								<linearGradient id="historyGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-									<stop offset="0%" stop-color="rgba(0,103,92,0.22)" />
-									<stop offset="100%" stop-color="rgba(0,103,92,0)" />
-								</linearGradient>
-							</defs>
-							<path class="area" d={trendAreaPath(trendPoints)} />
-							<path class="line" d={trendPath(trendPoints)} />
-							{#each trendPoints as point, index}
-								<circle cx={index * 120} cy={180 - point.value * 2} r="5" />
-							{/each}
-						</svg>
-
-						<div class="chart-labels">
-							{#each trendPoints as point}
-								<span>{point.day}</span>
+					{#if heartRateChart.length > 0}
+						<div class="bar-chart" role="img" aria-label="Heart rate chart">
+							{#each heartRateChart as point}
+								<div class="bar-group">
+									<div class="bar-value">{point.display}</div>
+									<div class="bar-track">
+										<div class="bar-fill heart" style={`height: ${barHeight(point.value, Math.max(...heartRateChart.map((item) => item.value), 1))}%`}></div>
+									</div>
+									<div class="bar-label">{point.label}</div>
+								</div>
 							{/each}
 						</div>
+					{:else}
+						<p class="inline-hint">No saved heart-rate sessions yet.</p>
+					{/if}
+				</article>
+
+				<article class="chart-card">
+					<div class="section-heading">
+						<div>
+							<h2>Average HRV by session</h2>
+							<p>Average HRV in milliseconds for each session in the current filter.</p>
+						</div>
 					</div>
-				</section>
 
-				<section class="history-groups">
-					{#each historyGroups as group}
-						<article class="day-group">
-							<div class="day-head">
-								<div class={`mood-badge ${group.tone}`}>
-									<span class="material-symbols-outlined filled">{group.moodIcon}</span>
+					{#if hrvChart.length > 0}
+						<div class="bar-chart" role="img" aria-label="HRV chart">
+							{#each hrvChart as point}
+								<div class="bar-group">
+									<div class="bar-value">{point.display}</div>
+									<div class="bar-track">
+										<div class="bar-fill hrv" style={`height: ${barHeight(point.value, Math.max(...hrvChart.map((item) => item.value), 1))}%`}></div>
+									</div>
+									<div class="bar-label">{point.label}</div>
 								</div>
-								<div>
-									<h4>{group.dayLabel}</h4>
-									<p>{group.summary}</p>
+							{/each}
+						</div>
+					{:else}
+						<p class="inline-hint">No HRV summary is available yet.</p>
+					{/if}
+				</article>
+			</section>
+
+			<section class="session-list">
+				<div class="section-heading">
+					<div>
+						<h2>Saved sessions</h2>
+						<p>Every card reflects what is currently stored for this signed-in user in `summary_payload`.</p>
+					</div>
+					{#if isLoadingHistory}
+						<p class="inline-hint">Loading...</p>
+					{/if}
+				</div>
+
+				{#if sessionCards.length > 0}
+					<div class="session-grid">
+						{#each sessionCards as session}
+							<article class="session-card">
+								<div class="session-head">
+									<div>
+										<p class="session-date">{session.dateLabel}</p>
+										<h3>{session.activityLabel}</h3>
+									</div>
+									<p class="session-time">{session.timeLabel}</p>
 								</div>
-							</div>
 
-							{#if group.entries}
-								<div class="entry-stack">
-									{#each group.entries as entry}
-										<div class={`entry-card ${entry.tone ?? ''}`}>
-											<div class="entry-top">
-												<div>
-													<span>{entry.time}</span>
-													<h5>{entry.title}</h5>
-												</div>
-												<span class="material-symbols-outlined">{entry.icon}</span>
-											</div>
+								<div class="session-metrics">
+									<div>
+										<span class="metric-label">Heart Rate</span>
+										<strong>{formatMetric(session.avgHeartRate, 1)} bpm</strong>
+									</div>
+									<div>
+										<span class="metric-label">Average HRV</span>
+										<strong>{formatMetric(session.avgHrvMs, 1)} ms</strong>
+									</div>
+									<div>
+										<span class="metric-label">Time</span>
+										<strong>{session.durationLabel}</strong>
+									</div>
+									<div>
+										<span class="metric-label">Device</span>
+										<strong>{session.deviceLabel}</strong>
+									</div>
+								</div>
 
-											<div class="sparkline">
-												<svg viewBox="0 0 240 40" preserveAspectRatio="none">
-													<path d={entry.path} />
-												</svg>
-											</div>
-
-											<div class="tag-row">
-												{#each entry.tags as tag}
-													<span>{tag}</span>
-												{/each}
-											</div>
+								{#if session.segments.length > 0}
+									<div class="segment-summary">
+										<div class="segment-head">
+											<p>Segment trend</p>
+											<span>{session.segments.length} segment{session.segments.length === 1 ? '' : 's'}</span>
 										</div>
-									{/each}
-								</div>
-							{:else}
-								<div class="collapsed-note">
-									<p>{group.collapsedNote}</p>
-								</div>
-							{/if}
-						</article>
-					{/each}
-				</section>
-
-				<section class="insight-card">
-					<div class="insight-copy">
-						<p class="eyebrow light">AI Insight</p>
-						<h3>Your resilience is peaking in the afternoons.</h3>
-						<p>
-							Based on your recent rhythm, mid-day movement sessions are still the point where your stress curve softens fastest.
-						</p>
+										<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Segment heart-rate trend">
+											<path d={segmentChartPath(session.segments)} />
+										</svg>
+									</div>
+								{/if}
+							</article>
+						{/each}
 					</div>
-					<div class="insight-photo">
-						<img
-							src="https://lh3.googleusercontent.com/aida-public/AB6AXuAShCyzxUslE9SVx-yccqmf8VYnXKIKCfG4T6nsPXmzmyI4wiGJcXI3IrkANmXSxzSsLKht1FaGr1abSqZ2kxxTniABdsV2sDiI9wIN6fmEzFVQWdE6Kq0lMYAzDh1G7e61BZlxjxlG4IP0yThIDZOCy731Mlh-OeCbl20ifdpDbsvlAAREySOYRSJADWowhm3HRwu2tMNrrGt5iSLn1w8RPCyxjFzP11hC5IltzfZNYtkYhsy9pvQXnzuSxNtywIddS1VAIuIMUoo"
-							alt="Person meditating"
-						/>
+				{:else}
+					<div class="empty-card">
+						<h3>No sessions match this filter yet.</h3>
+						<p>Try a different date, or save a new session from the Live Data page first.</p>
 					</div>
-				</section>
+				{/if}
 			</section>
 		</section>
 	</main>
 {/if}
 
 <style>
+	:global(:root) {
+		--background: #f4f6ff;
+		--surface: #f4f6ff;
+		--surface-container-lowest: #ffffff;
+		--surface-container-low: #eaf1ff;
+		--surface-container: #dce9ff;
+		--surface-container-high: #d3e4ff;
+		--on-surface: #212f42;
+		--on-surface-variant: #4e5c71;
+		--primary: #00675c;
+		--on-primary: #c1fff2;
+		--secondary-container: #b7d3ff;
+		--outline-variant: #a0aec5;
+		--panel-bg: rgba(255, 255, 255, 0.82);
+		--panel-border: rgba(160, 174, 197, 0.3);
+		--field-bg: rgba(255, 255, 255, 0.9);
+		--field-border: rgba(160, 174, 197, 0.4);
+		--body-overlay-a: rgba(91, 244, 222, 0.26);
+		--body-overlay-b: rgba(183, 211, 255, 0.86);
+		--body-top: #f8fbff;
+		--body-bottom: #edf4ff;
+		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
+	}
+
+	:global(:root[data-theme='dark']) {
+		--background: #091521;
+		--surface: #0b1723;
+		--surface-container-lowest: #0d1c2a;
+		--surface-container-low: #0f2231;
+		--surface-container: #122636;
+		--surface-container-high: #173244;
+		--on-surface: #edf5ff;
+		--on-surface-variant: #bacbdd;
+		--primary: #67efe0;
+		--on-primary: #073a35;
+		--secondary-container: #1b455f;
+		--outline-variant: #465a6c;
+		--panel-bg: rgba(11, 24, 36, 0.82);
+		--panel-border: rgba(92, 111, 127, 0.3);
+		--field-bg: rgba(16, 33, 46, 0.96);
+		--field-border: rgba(81, 103, 121, 0.42);
+		--body-overlay-a: rgba(91, 244, 222, 0.14);
+		--body-overlay-b: rgba(82, 120, 170, 0.18);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
+		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
+	}
+
 	:global(body) {
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.24), transparent 26%),
-			radial-gradient(circle at top right, rgba(183, 211, 255, 0.85), transparent 30%),
-			linear-gradient(180deg, #f8fbff 0%, #f4f6ff 42%, #edf4ff 100%);
-		color: #212f42;
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 28%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 30%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 42%, var(--body-bottom) 100%);
+		color: var(--on-surface);
 	}
 
 	:global(*) {
 		box-sizing: border-box;
-	}
-
-	:global(.material-symbols-outlined) {
-		font-variation-settings:
-			'FILL' 0,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
 	}
 
 	.auth-shell {
@@ -419,14 +652,22 @@
 		padding: 1.5rem;
 	}
 
+	.auth-card,
+	.stat-card,
+	.chart-card,
+	.session-card,
+	.filter-card,
+	.empty-card {
+		background: var(--panel-bg);
+		border: 1px solid var(--panel-border);
+		border-radius: 1.8rem;
+		box-shadow: var(--shadow-soft);
+		backdrop-filter: blur(18px);
+	}
+
 	.auth-card {
 		width: min(100%, 44rem);
 		padding: 2rem;
-		border-radius: 2rem;
-		background: rgba(255, 255, 255, 0.82);
-		border: 1px solid rgba(160, 174, 197, 0.3);
-		box-shadow: 0 20px 45px rgba(31, 47, 82, 0.12);
-		backdrop-filter: blur(18px);
 	}
 
 	.eyebrow {
@@ -435,11 +676,7 @@
 		font-weight: 800;
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
-		color: #00675c;
-	}
-
-	.eyebrow.light {
-		color: rgba(193, 255, 242, 0.86);
+		color: var(--primary);
 	}
 
 	.auth-card h1,
@@ -451,19 +688,19 @@
 
 	.auth-card h1 {
 		font-size: clamp(2.2rem, 5vw, 4rem);
-		color: #00675c;
+		color: var(--primary);
 	}
 
 	.auth-copy,
 	.inline-hint,
 	.inline-status,
-	.page-head p,
+	.page-copy,
 	.section-heading p,
-	.day-head p,
-	.insight-copy p {
+	.filter-copy,
+	.empty-card p {
 		margin: 0;
 		line-height: 1.55;
-		color: #4e5c71;
+		color: var(--on-surface-variant);
 	}
 
 	.auth-actions {
@@ -474,9 +711,7 @@
 	}
 
 	.button,
-	.button-subtle,
-	.log-button,
-	.calendar-link {
+	.button-subtle {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -490,16 +725,15 @@
 		cursor: pointer;
 	}
 
-	.button,
-	.log-button {
-		background: linear-gradient(135deg, #00675c, #128d7f);
+	.button {
+		background: linear-gradient(135deg, var(--primary), #128d7f);
 		color: #ffffff;
 		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
 	}
 
 	.button-subtle {
 		background: rgba(201, 222, 255, 0.7);
-		color: #212f42;
+		color: var(--on-surface);
 	}
 
 	.history-page {
@@ -514,411 +748,237 @@
 	}
 
 	.page-head {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
 		gap: 1rem;
-		padding-top: 0.4rem;
+		align-items: end;
 	}
 
 	.page-head h1 {
 		font-size: clamp(2.5rem, 5vw, 4.5rem);
-		color: #212f42;
-		max-width: 34rem;
+		color: var(--on-surface);
+		max-width: 40rem;
 	}
 
-	.head-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-	}
-
-	.streak-card {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-		padding: 1rem 1.15rem;
-		border-radius: 1.4rem;
-		background: rgba(211, 228, 255, 0.72);
-		border: 1px solid rgba(160, 174, 197, 0.18);
-	}
-
-	.streak-card p {
-		margin: 0;
-		font-size: 0.88rem;
-		font-weight: 700;
-		color: #4e5c71;
-	}
-
-	.streak-card strong {
-		display: block;
-		margin-top: 0.15rem;
-		font-size: 1.15rem;
-		color: #00675c;
-	}
-
-	.streak-icon,
-	.calendar-link,
-	.mood-badge {
+	.filter-card {
+		padding: 1.2rem;
 		display: grid;
-		place-items: center;
+		gap: 0.8rem;
 	}
 
-	.streak-icon {
-		width: 3rem;
-		height: 3rem;
+	.field {
+		display: grid;
+		gap: 0.45rem;
+	}
+
+	.field-label,
+	.metric-label,
+	.stat-label,
+	.bar-label,
+	.session-date,
+	.segment-head p {
+		font-size: 0.8rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--on-surface-variant);
+	}
+
+	.field select {
+		width: 100%;
+		border: 1px solid var(--field-border);
 		border-radius: 1rem;
-		background: #00675c;
-		color: white;
+		padding: 0.9rem 1rem;
+		font: inherit;
+		background: var(--field-bg);
+		color: var(--on-surface);
 	}
 
-	.calendar-link {
-		width: 3.35rem;
-		height: 3.35rem;
-		padding: 0;
-		border-radius: 1.2rem;
-		background: rgba(91, 244, 222, 0.22);
-		color: #00675c;
-		box-shadow: 0 10px 24px rgba(0, 103, 92, 0.12);
-	}
-
-	.journey-main {
+	.overview-grid,
+	.chart-grid {
 		display: grid;
-		gap: 1.25rem;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1rem;
 	}
 
-	.trend-card,
-	.day-group,
-	.collapsed-note {
-		background: rgba(255, 255, 255, 0.84);
-		border: 1px solid rgba(160, 174, 197, 0.24);
-		box-shadow: 0 20px 45px rgba(31, 47, 82, 0.08);
-		backdrop-filter: blur(18px);
+	.chart-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 
-	.section-heading h3,
-	.day-head h4,
-	.insight-copy h3 {
-		margin: 0;
-	}
-	.history-groups {
-		display: grid;
-		gap: 1.25rem;
+	.stat-card,
+	.chart-card,
+	.session-card,
+	.empty-card {
+		padding: 1.5rem;
 	}
 
-	.trend-card,
-	.day-group,
-	.insight-card {
-		border-radius: 2rem;
-		padding: 1.6rem;
+	.stat-value {
+		margin: 0.45rem 0 0;
+		font-size: clamp(1.8rem, 4vw, 2.8rem);
+		font-weight: 800;
+		letter-spacing: -0.04em;
+		color: var(--on-surface);
+	}
+
+	.stat-value span {
+		font-size: 0.9rem;
+		letter-spacing: 0.02em;
+		color: var(--on-surface-variant);
 	}
 
 	.section-heading {
 		display: flex;
-		align-items: center;
+		align-items: end;
 		justify-content: space-between;
 		gap: 1rem;
 	}
 
-	.trend-actions {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.65rem;
+	.section-heading h2 {
+		margin: 0;
+		font-size: 1.45rem;
+		color: var(--on-surface);
 	}
 
-	.section-heading h3 {
-		font-size: 1.3rem;
-	}
-
-	.view-chip {
-		padding: 0.55rem 0.9rem;
-		border-radius: 999px;
-		background: rgba(0, 103, 92, 0.08);
-		color: #00675c;
-		font-size: 0.78rem;
-		font-weight: 800;
-	}
-
-	.chart-shell {
-		margin-top: 1.4rem;
-	}
-
-	.trend-chart {
-		width: 100%;
-		height: 16rem;
-	}
-
-	.trend-chart .area {
-		fill: url(#historyGradient);
-	}
-
-	.trend-chart .line {
-		fill: none;
-		stroke: #00675c;
-		stroke-width: 4;
-		stroke-linecap: round;
-		stroke-linejoin: round;
-	}
-
-	.trend-chart circle {
-		fill: #00675c;
-	}
-
-	.chart-labels {
+	.bar-chart {
 		display: grid;
-		grid-template-columns: repeat(7, minmax(0, 1fr));
-		margin-top: 0.55rem;
-		font-size: 0.78rem;
-		font-weight: 800;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: #6a788d;
+		grid-template-columns: repeat(auto-fit, minmax(3.5rem, 1fr));
+		gap: 0.9rem;
+		align-items: end;
+		margin-top: 1.4rem;
+		min-height: 15rem;
 	}
 
-	.day-head {
+	.bar-group {
+		display: grid;
+		gap: 0.55rem;
+		align-items: end;
+		justify-items: center;
+	}
+
+	.bar-value {
+		font-size: 0.8rem;
+		font-weight: 700;
+		color: var(--on-surface);
+	}
+
+	.bar-track {
 		display: flex;
-		align-items: center;
+		align-items: end;
+		justify-content: center;
+		width: 100%;
+		height: 10rem;
+		padding: 0.35rem;
+		border-radius: 1.2rem;
+		background: color-mix(in srgb, var(--surface-container-low) 82%, transparent);
+		border: 1px solid color-mix(in srgb, var(--outline-variant) 42%, transparent);
+	}
+
+	.bar-fill {
+		width: 100%;
+		border-radius: 0.9rem;
+		min-height: 0.5rem;
+	}
+
+	.bar-fill.heart {
+		background: linear-gradient(180deg, #ff7e87 0%, #d65a64 100%);
+	}
+
+	.bar-fill.hrv {
+		background: linear-gradient(180deg, var(--primary) 0%, #128d7f 100%);
+	}
+
+	.session-list {
+		display: grid;
 		gap: 1rem;
 	}
 
-	.day-head h4 {
-		font-size: 1.7rem;
-		letter-spacing: -0.03em;
+	.session-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+		gap: 1rem;
 	}
 
-	.mood-badge {
-		width: 4rem;
-		height: 4rem;
-		border-radius: 999px;
+	.session-head,
+	.session-metrics,
+	.segment-head {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.8rem;
+		flex-wrap: wrap;
 	}
 
-	.mood-badge.calm {
-		background: rgba(91, 244, 222, 0.24);
-		color: #00594f;
+	.session-head h3 {
+		margin: 0.2rem 0 0;
+		font-size: 1.25rem;
+		color: var(--on-surface);
 	}
 
-	.mood-badge.alert {
-		background: rgba(251, 81, 81, 0.14);
-		color: #b31b25;
-		border: 3px solid rgba(251, 81, 81, 0.28);
+	.session-time {
+		margin: 0;
+		font-weight: 700;
+		color: var(--on-surface-variant);
 	}
 
-	.mood-badge.balanced {
-		background: rgba(252, 192, 37, 0.22);
-		color: #755600;
-		border: 3px solid rgba(252, 192, 37, 0.28);
-	}
-
-	.filled {
-		font-variation-settings:
-			'FILL' 1,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
-	}
-
-	.entry-stack {
+	.session-metrics {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 1rem;
-		margin-top: 1.25rem;
-		padding-left: 1.1rem;
-		border-left: 4px solid rgba(211, 228, 255, 0.95);
+		margin-top: 1.2rem;
 	}
 
-	.entry-card {
-		padding: 1.25rem;
-		border-radius: 1.45rem;
-		background: #eaf1ff;
-		transition:
-			transform 160ms ease,
-			background 160ms ease;
-	}
-
-	.entry-card:hover {
-		transform: translateY(-2px);
-		background: #dce9ff;
-	}
-
-	.entry-card.alert {
-		border-left: 4px solid #b31b25;
-	}
-
-	.entry-card.muted {
-		opacity: 0.78;
-	}
-
-	.entry-top {
-		display: flex;
-		align-items: start;
-		justify-content: space-between;
-		gap: 1rem;
-	}
-
-	.entry-top span:first-child {
+	.session-metrics strong {
 		display: block;
-		font-size: 0.72rem;
-		font-weight: 900;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
-		color: #6a788d;
+		margin-top: 0.25rem;
+		font-size: 1.05rem;
+		color: var(--on-surface);
 	}
 
-	.entry-top h5 {
-		margin: 0.35rem 0 0;
-		font-size: 1.1rem;
-		color: #00675c;
+	.segment-summary {
+		margin-top: 1.3rem;
+		padding-top: 1rem;
+		border-top: 1px solid color-mix(in srgb, var(--outline-variant) 38%, transparent);
 	}
 
-	.entry-card.alert .entry-top h5,
-	.entry-card.alert .entry-top > span:last-child {
-		color: #b31b25;
+	.segment-head span {
+		font-size: 0.9rem;
+		color: var(--on-surface-variant);
 	}
 
-	.entry-card.muted .entry-top h5,
-	.entry-card.muted .entry-top > span:last-child {
-		color: #6a788d;
-	}
-
-	.sparkline {
-		margin: 1rem 0;
-		height: 2.5rem;
-		overflow: hidden;
-	}
-
-	.sparkline svg {
+	.segment-summary svg {
 		width: 100%;
-		height: 100%;
+		height: 5rem;
+		margin-top: 0.8rem;
+		overflow: visible;
 	}
 
-	.sparkline path {
+	.segment-summary path {
 		fill: none;
-		stroke: #00675c;
-		stroke-width: 2.5;
+		stroke: var(--primary);
+		stroke-width: 3;
 		stroke-linecap: round;
 		stroke-linejoin: round;
 	}
 
-	.entry-card.alert .sparkline path {
-		stroke: #b31b25;
-	}
-
-	.entry-card.muted .sparkline path {
-		stroke: #6a788d;
-	}
-
-	.tag-row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-	}
-
-	.tag-row span {
-		padding: 0.4rem 0.65rem;
-		border-radius: 0.8rem;
-		background: rgba(255, 255, 255, 0.62);
-		font-size: 0.75rem;
-		font-weight: 700;
-		color: #212f42;
-	}
-
-	.entry-card.alert .tag-row span {
-		background: rgba(179, 27, 37, 0.08);
-		color: #b31b25;
-		text-transform: uppercase;
-	}
-
-	.collapsed-note {
-		margin-top: 1.25rem;
-		padding: 1.1rem 1.25rem 1.1rem 2.2rem;
-		border-left: 4px solid rgba(211, 228, 255, 0.5);
-	}
-
-	.collapsed-note p {
+	.empty-card h3 {
 		margin: 0;
-		font-style: italic;
-		color: #4e5c71;
+		color: var(--on-surface);
 	}
 
-	.insight-card {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1.5rem;
-		background: linear-gradient(135deg, #00675c, #00594f);
-		color: #c1fff2;
-		box-shadow: 0 16px 34px rgba(0, 90, 80, 0.24);
+	@media (max-width: 960px) {
+		.page-head,
+		.overview-grid,
+		.chart-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
-	.insight-copy {
-		max-width: 40rem;
-	}
-
-	.insight-copy h3 {
-		margin-top: 0.45rem;
-		font-size: clamp(1.8rem, 4vw, 2.8rem);
-		line-height: 1.05;
-		letter-spacing: -0.03em;
-		color: white;
-	}
-
-	.insight-copy p:last-child {
-		margin-top: 0.8rem;
-		color: rgba(193, 255, 242, 0.88);
-	}
-
-	.insight-photo {
-		position: relative;
-		width: 11rem;
-		height: 11rem;
-		flex-shrink: 0;
-	}
-
-	.insight-photo::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: 999px;
-		background: rgba(91, 244, 222, 0.24);
-		filter: blur(26px);
-	}
-
-	.insight-photo img {
-		position: relative;
-		width: 100%;
-		height: 100%;
-		object-fit: cover;
-		border-radius: 999px;
-		border: 4px solid #5bf4de;
-	}
-
-	@media (max-width: 780px) {
-		.history-page {
+	@media (max-width: 720px) {
+		.history-page,
+		.auth-shell {
 			padding-inline: 1rem;
 		}
 
-		.page-head,
-		.insight-card {
-			flex-direction: column;
-			align-items: start;
-		}
-
-		.head-actions {
-			width: 100%;
-			justify-content: space-between;
-		}
-
-		.section-heading {
-			flex-direction: column;
-			align-items: flex-start;
-		}
-
-		.trend-actions {
-			align-items: flex-start;
-		}
-
-		.entry-stack {
+		.session-metrics {
 			grid-template-columns: 1fr;
 		}
 	}
