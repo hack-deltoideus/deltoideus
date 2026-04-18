@@ -1,6 +1,7 @@
 export type PolarReading = {
   heartRate: number;
   rrMs?: number;
+  hrvMs?: number;
 };
 
 const HEART_RATE_SERVICE = 0x180d;
@@ -29,6 +30,20 @@ export function parseHeartRateMeasurement(value: DataView): PolarReading {
   return { heartRate, rrMs };
 }
 
+function calculateRmssd(rrHistory: number[]): number | undefined {
+  if (rrHistory.length < 2) {
+    return undefined;
+  }
+
+  let squaredDiffTotal = 0;
+  for (let index = 1; index < rrHistory.length; index += 1) {
+    const diff = rrHistory[index] - rrHistory[index - 1];
+    squaredDiffTotal += diff * diff;
+  }
+
+  return Number(Math.sqrt(squaredDiffTotal / (rrHistory.length - 1)).toFixed(2));
+}
+
 export async function connectHeartRateMonitor(
   onReading: (reading: PolarReading) => void
 ): Promise<() => Promise<void>> {
@@ -54,6 +69,7 @@ export async function connectHeartRateMonitor(
 
   const service = await server.getPrimaryService(HEART_RATE_SERVICE);
   const characteristic = await service.getCharacteristic(HEART_RATE_MEASUREMENT_CHARACTERISTIC);
+  const recentRrIntervals: number[] = [];
 
   const handler = (event: Event) => {
     const target = event.target as BluetoothCharacteristicWithValue;
@@ -62,7 +78,18 @@ export async function connectHeartRateMonitor(
       return;
     }
 
-    onReading(parseHeartRateMeasurement(value));
+    const reading = parseHeartRateMeasurement(value);
+
+    if (typeof reading.rrMs === 'number') {
+      recentRrIntervals.push(reading.rrMs);
+      if (recentRrIntervals.length > 12) {
+        recentRrIntervals.shift();
+      }
+
+      reading.hrvMs = calculateRmssd(recentRrIntervals);
+    }
+
+    onReading(reading);
   };
 
   characteristic.addEventListener('characteristicvaluechanged', handler);

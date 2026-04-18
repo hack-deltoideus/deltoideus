@@ -8,6 +8,9 @@ Stress Buddy combines quick self check-ins with Polar H10 heart-rate data to cat
 
 - Connect to a Polar H10 over Bluetooth LE (Web Bluetooth)
 - Display live heart rate and RR interval
+- Persist one timestamped JSON summary per sensor session into Supabase, including average heart rate and RR variability
+- Attach each check-in to the active sensor session when one exists
+- Sign in with Supabase OAuth so each user sees only their own sessions and check-ins
 - Run a simple stress score from bio-signal + user input
 - Trigger one intervention suggestion based on stress level
 - Save check-ins and intervention events to Supabase
@@ -36,6 +39,7 @@ Set these values in `.env`:
 
 - `PUBLIC_SUPABASE_URL`
 - `PUBLIC_SUPABASE_ANON_KEY`
+- Enable at least one OAuth provider in Supabase Auth (the app supports Google and GitHub)
 - `GEMINI_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`)
 - `GEMINI_MODEL` (optional, defaults to `gemini-2.5-flash-lite`)
 
@@ -43,6 +47,7 @@ Set these values in `.env`:
 
 - Open SQL Editor in your Supabase project
 - Run SQL from `supabase/schema.sql`
+- If you already created the earlier MVP tables, re-run the updated schema so `sensor_sessions` has the new summary columns and `session_summary` JSON field
 
 4. Run app
 
@@ -68,10 +73,11 @@ npm run dev -- --open
 ## Demo script (60 seconds)
 
 1. Connect Polar H10 (or click `Simulate Spike`)
-2. Set mood, workload, sleep sliders
-3. Show stress level changes in real time
-4. Save check-in to Supabase
-5. Show inserted rows in `check_ins` and `interventions`
+2. Click `Start Session`
+3. Show live session averages / variability updating in real time
+4. Click `End Session` to save the timestamped session JSON
+5. Set mood, workload, sleep sliders
+6. Save check-in to Supabase
 
 ## Notes
 
