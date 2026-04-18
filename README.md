@@ -8,6 +8,9 @@ Stress Buddy combines quick self check-ins with Polar H9 heart-rate data to catc
 
 - Connect to a Polar H9 over Bluetooth LE (Web Bluetooth)
 - Display live heart rate and RR interval
+- Persist one timestamped JSON summary per sensor session into Supabase, including average heart rate and RR variability
+- Attach each check-in to the active sensor session when one exists
+- Sign in with Supabase OAuth so each user sees only their own sessions and check-ins
 - Run a simple stress score from bio-signal + user input
 - Trigger one intervention suggestion based on stress level
 - Save check-ins and intervention events to Supabase
@@ -36,6 +39,7 @@ Set these values in `.env`:
 
 - `PUBLIC_SUPABASE_URL`
 - `PUBLIC_SUPABASE_ANON_KEY`
+- Enable at least one OAuth provider in Supabase Auth (the app supports Google and GitHub)
 - `GEMINI_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`)
 - `GEMINI_MODEL` (optional, defaults to `gemini-2.5-flash-lite`)
 
@@ -43,6 +47,7 @@ Set these values in `.env`:
 
 - Open SQL Editor in your Supabase project
 - Run SQL from `supabase/schema.sql`
+- If you already created the earlier MVP tables, re-run the updated schema so `sensor_sessions` has the new summary columns and `session_summary` JSON field
 
 4. Run app
 
