@@ -36,7 +36,8 @@ Set these values in `.env`:
 
 - `PUBLIC_SUPABASE_URL`
 - `PUBLIC_SUPABASE_ANON_KEY`
-- `GEMINI_KEY`
+- `GEMINI_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`)
+- `GEMINI_MODEL` (optional, defaults to `gemini-2.5-flash`)
 
 3. Create tables in Supabase
 
@@ -54,12 +55,15 @@ npm run dev -- --open
 - Open the Stress Detection card
 - Click `Generate Gemini Plan`
 - The app calls a server endpoint that uses `GEMINI_KEY` privately
+- If you were previously using `gemini-2.0-flash`, switch to `gemini-2.5-flash`
 
 6. Use Kelp personality helper
 
 - Open `Ask Kelp (Gemini Helper)`
-- Ask a question about stress, focus, or workload
+- Pick a persona: `Calm Coach`, `Tough Love`, or `Study Planner`
+- Use quick prompt chips or type your own question
 - Get a concise personality-driven response with one next step
+- Keep context with recent chat memory in the UI
 
 ## Demo script (60 seconds)
 
