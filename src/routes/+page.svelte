@@ -3,6 +3,8 @@
 </svelte:head>
 
 <script lang="ts">
+	import SiteNav from '$lib/components/SiteNav.svelte';
+
 	const navLinks = [
 		{ label: 'Features', href: '#features', active: true },
 		{ label: 'Science', href: '#science' },
@@ -18,22 +20,16 @@
 	];
 </script>
 
+<SiteNav />
+
 <main class="landing-shell">
-	<header class="topbar">
-		<nav class="topbar-inner">
-			<a class="brand" href="/">Sanctuary</a>
-
-			<div class="nav-links" aria-label="Primary">
-				{#each navLinks as link}
-					<a class:active={link.active} href={link.href}>{link.label}</a>
-				{/each}
-			</div>
-
-			<a class="nav-cta" href="/app">Login</a>
-		</nav>
-	</header>
-
 	<section class="hero">
+		<div class="hero-nav-links" aria-label="Landing sections">
+			{#each navLinks as link}
+				<a class:active={link.active} href={link.href}>{link.label}</a>
+			{/each}
+		</div>
+
 		<div class="hero-copy">
 			<h1>
 				Your quiet corner
@@ -198,15 +194,77 @@
 		--primary-dim: #005a50;
 		--on-primary: #c1fff2;
 		--on-primary-container: #00594f;
+		--body-overlay-a: rgba(91, 244, 222, 0.32);
+		--body-overlay-b: rgba(252, 192, 37, 0.12);
+		--body-top: #fbfdff;
+		--body-bottom: #eff5ff;
+	}
+
+	:global(:root[data-theme='dark']) {
+		--surface-container-lowest: #0d1c2a;
+		--on-secondary-container: #dcedff;
+		--surface-bright: #0b1723;
+		--secondary-fixed: #345f83;
+		--tertiary-fixed-dim: #c69b2e;
+		--secondary-fixed-dim: #2f5576;
+		--primary-fixed: #197d73;
+		--primary-fixed-dim: #166b63;
+		--surface-container-low: #0f2231;
+		--tertiary-fixed: #f2bf47;
+		--surface-container-high: #173044;
+		--on-secondary-fixed-variant: #dcedff;
+		--on-secondary: #dcedff;
+		--inverse-on-surface: #cad8e8;
+		--secondary: #7fc7ff;
+		--error-dim: #ff8990;
+		--error-container: #6c1d26;
+		--primary-container: #197d73;
+		--surface-tint: #67efe0;
+		--on-tertiary-fixed-variant: #3c2b00;
+		--outline: #70879c;
+		--inverse-surface: #eef5ff;
+		--secondary-container: #1b455f;
+		--outline-variant: #465a6c;
+		--surface-container-highest: #1d3c52;
+		--surface-variant: #173044;
+		--on-surface: #edf5ff;
+		--on-error: #ffeef0;
+		--on-tertiary: #352600;
+		--surface-dim: #08131d;
+		--on-primary-fixed-variant: #d7fff8;
+		--error: #ff8990;
+		--on-background: #edf5ff;
+		--on-tertiary-container: #3c2b00;
+		--surface: #0b1723;
+		--tertiary: #f2bf47;
+		--on-primary-fixed: #d7fff8;
+		--on-secondary-fixed: #dcedff;
+		--on-surface-variant: #bacbdd;
+		--on-tertiary-fixed: #2c2000;
+		--on-error-container: #ffeef0;
+		--tertiary-dim: #ddb14e;
+		--tertiary-container: #f2bf47;
+		--inverse-primary: #00675c;
+		--primary: #67efe0;
+		--secondary-dim: #66b4ef;
+		--surface-container: #122636;
+		--background: #091521;
+		--primary-dim: #54d9c9;
+		--on-primary: #073a35;
+		--on-primary-container: #d7fff8;
+		--body-overlay-a: rgba(91, 244, 222, 0.14);
+		--body-overlay-b: rgba(82, 120, 170, 0.18);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
 	}
 
 	:global(body) {
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.32), transparent 28%),
-			radial-gradient(circle at top right, rgba(252, 192, 37, 0.12), transparent 25%),
-			linear-gradient(180deg, #fbfdff 0%, var(--background) 45%, #eff5ff 100%);
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 28%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 25%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 45%, var(--body-bottom) 100%);
 		color: var(--on-background);
 	}
 
@@ -231,46 +289,24 @@
 	}
 
 	.landing-shell {
-		padding: 0 1.5rem 6rem;
+		padding: 1.25rem 1.5rem 6rem;
 	}
 
-	.topbar {
-		position: sticky;
-		top: 0;
-		z-index: 50;
-		padding-top: 1rem;
-	}
-
-	.topbar-inner {
+	.hero-nav-links {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: center;
 		gap: 1rem;
-		max-width: 78rem;
-		margin: 0 auto;
-		padding: 1rem 1.4rem;
-		background: rgba(255, 255, 255, 0.48);
-		backdrop-filter: blur(18px);
-		border: 1px solid rgba(255, 255, 255, 0.6);
+		max-width: max-content;
+		margin: 0 auto 1.8rem;
+		padding: 0.7rem 0.9rem;
 		border-radius: 999px;
-		box-shadow: 0 10px 28px rgba(33, 47, 66, 0.08);
+		background: rgba(255, 255, 255, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.72);
+		backdrop-filter: blur(14px);
 	}
 
-	.brand {
-		font-size: 1.6rem;
-		font-weight: 800;
-		letter-spacing: -0.06em;
-		color: #0f8a79;
-		text-decoration: none;
-	}
-
-	.nav-links {
-		display: flex;
-		align-items: center;
-		gap: 1.8rem;
-	}
-
-	.nav-links a,
+	.hero-nav-links a,
 	.footer-links a,
 	.hero-actions p a {
 		color: var(--on-surface-variant);
@@ -281,20 +317,20 @@
 			border-color 160ms ease;
 	}
 
-	.nav-links a:hover,
+	.hero-nav-links a:hover,
 	.footer-links a:hover,
 	.hero-actions p a:hover {
 		color: var(--primary);
 	}
 
-	.nav-links a.active {
+	.hero-nav-links a.active {
 		color: var(--primary);
 		font-weight: 700;
-		padding-bottom: 0.35rem;
-		border-bottom: 2px solid #14b8a6;
+		background: rgba(20, 184, 166, 0.14);
+		padding: 0.55rem 0.9rem;
+		border-radius: 999px;
 	}
 
-	.nav-cta,
 	.primary-action,
 	.secondary-action {
 		display: inline-flex;
@@ -309,14 +345,6 @@
 			filter 160ms ease;
 	}
 
-	.nav-cta {
-		padding: 0.8rem 1.5rem;
-		border-radius: 999px;
-		background: var(--primary);
-		color: var(--on-primary);
-	}
-
-	.nav-cta:hover,
 	.primary-action:hover,
 	.secondary-action:hover {
 		transform: translateY(-1px) scale(1.01);
@@ -690,10 +718,6 @@
 	}
 
 	@media (max-width: 960px) {
-		.nav-links {
-			display: none;
-		}
-
 		.bento-grid {
 			grid-template-columns: 1fr;
 		}
@@ -724,12 +748,9 @@
 			padding-inline: 1rem;
 		}
 
-		.topbar-inner {
-			padding: 0.9rem 1rem;
-		}
-
-		.nav-cta {
-			padding-inline: 1rem;
+		.hero-nav-links {
+			flex-wrap: wrap;
+			margin-bottom: 1.5rem;
 		}
 
 		.hero {

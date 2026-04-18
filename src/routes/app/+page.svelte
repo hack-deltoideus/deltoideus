@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
+	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
@@ -26,7 +27,7 @@
 		code?: string;
 	};
 
-	type OAuthProvider = 'google' | 'github';
+type OAuthProvider = 'google';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -91,6 +92,9 @@
 				: 'Action recommended'
 	);
 	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
+	const displayName = $derived(getDisplayName(currentUser));
+	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
+	const profileCopy = $derived(currentUser?.email ?? 'Ready for your check-in?');
 
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
@@ -141,6 +145,35 @@
 		}
 
 		return fallback;
+	}
+
+	function getDisplayName(user: User | null): string {
+		if (!user) {
+			return 'Friend';
+		}
+
+		const metadata = user.user_metadata as Record<string, unknown> | undefined;
+		const fullName = typeof metadata?.full_name === 'string' ? metadata.full_name.trim() : '';
+		const name = typeof metadata?.name === 'string' ? metadata.name.trim() : '';
+		const givenName = typeof metadata?.given_name === 'string' ? metadata.given_name.trim() : '';
+
+		if (givenName) {
+			return givenName;
+		}
+
+		if (fullName) {
+			return fullName.split(' ')[0] ?? fullName;
+		}
+
+		if (name) {
+			return name.split(' ')[0] ?? name;
+		}
+
+		if (user.email) {
+			return user.email.split('@')[0] ?? 'Friend';
+		}
+
+		return 'Friend';
 	}
 
 	async function signInWithProvider(provider: OAuthProvider) {
@@ -418,21 +451,16 @@
 </svelte:head>
 
 {#if !currentUser}
+	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-hero">
 			<div class="auth-panel kit-panel">
 				<p class="brand-kicker">Sanctuary</p>
 				<h1>Sign in to enter your calm dashboard.</h1>
-				<p class="auth-lead">
-					Use the OAuth setup already connected to Supabase to open your personal space.
-				</p>
 
 				<div class="auth-actions">
 					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
 						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
-					</button>
-					<button class="button button-subtle" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
-						{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
 					</button>
 				</div>
 
@@ -447,27 +475,27 @@
 		</section>
 	</main>
 {:else}
+<SiteNav />
 <main class="app-shell">
 	<header class="mobile-topbar kit-panel">
 		<div>
 			<p class="brand-kicker">Sanctuary</p>
 			<p class="brand-subtitle">Mental space</p>
 		</div>
-		<button class="icon-button" type="button" aria-label="Profile">
-			<span class="material-symbols-outlined">account_circle</span>
-		</button>
 	</header>
 
 	<aside class="sidebar kit-panel">
 		<div class="sidebar-block">
-			<p class="brand-kicker">Sanctuary</p>
+			<div class="sidebar-head">
+				<p class="brand-kicker">Sanctuary</p>
+			</div>
 			<h2 class="sidebar-title">Your calm command center</h2>
 
 			<div class="profile-card">
-				<div class="avatar">A</div>
+				<div class="avatar">{avatarLetter}</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{currentUser.email ?? 'Ready for your check-in?'}</p>
+					<p class="profile-copy">{displayName} · {profileCopy}</p>
 				</div>
 			</div>
 		</div>
@@ -504,7 +532,7 @@
 	<div class="main-column">
 		<section class="hero" id="dashboard">
 			<div>
-				<h1>Welcome back, Alex</h1>
+				<h1>Welcome back, {displayName}</h1>
 				<p class="hero-copy">Today is a beautiful day to nurture your mind.</p>
 			</div>
 
@@ -737,7 +765,7 @@
 						<div class="chat-bubble">
 							<p class="chat-author">Kelp</p>
 							<p>
-								Hello Alex! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
+								Hello {displayName}! You seem exceptionally calm today. Would you like to try a deep focus meditation or log a specific win?
 							</p>
 						</div>
 					{/if}
@@ -844,6 +872,73 @@
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
 		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
+		--body-overlay-a: rgba(91, 244, 222, 0.36);
+		--body-overlay-b: rgba(183, 211, 255, 0.9);
+		--body-top: #f8fbff;
+		--body-bottom: #edf4ff;
+		--panel-bg: rgba(255, 255, 255, 0.76);
+		--panel-border: rgba(160, 174, 197, 0.3);
+		--nav-hover-bg: rgba(201, 222, 255, 0.7);
+		--hero-streak-bg: rgba(211, 228, 255, 0.72);
+		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		--sensor-bg: rgba(255, 255, 255, 0.92);
+		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		--field-bg: rgba(255, 255, 255, 0.88);
+		--field-border: rgba(160, 174, 197, 0.38);
+		--slider-bg: rgba(255, 255, 255, 0.8);
+		--button-subtle-bg: rgba(201, 222, 255, 0.7);
+		--chat-shell-bg: rgba(255, 255, 255, 0.55);
+		--chat-bubble-bg: white;
+		--prompt-chip-bg: white;
+		--saved-panel-bg: rgba(211, 228, 255, 0.58);
+		--metric-card-bg: var(--surface-container);
+		--icon-bg: white;
+	}
+
+	:global(:root[data-theme='dark']) {
+		--background: #091521;
+		--surface-container-lowest: #0d1c2a;
+		--secondary: #7fc7ff;
+		--tertiary-container: #f2bf47;
+		--surface-container-high: #173044;
+		--error: #ff8990;
+		--surface-container-highest: #1d3c52;
+		--on-surface: #edf5ff;
+		--on-tertiary-container: #3c2b00;
+		--surface: #0b1723;
+		--surface-container: #122636;
+		--surface-container-low: #0f2231;
+		--on-surface-variant: #bacbdd;
+		--primary-dim: #54d9c9;
+		--outline: #70879c;
+		--primary: #67efe0;
+		--on-primary: #073a35;
+		--primary-container: #197d73;
+		--on-secondary-container: #dcedff;
+		--secondary-container: #1b455f;
+		--outline-variant: #465a6c;
+		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
+		--body-overlay-a: rgba(91, 244, 222, 0.14);
+		--body-overlay-b: rgba(82, 120, 170, 0.18);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
+		--panel-bg: rgba(11, 24, 36, 0.82);
+		--panel-border: rgba(92, 111, 127, 0.3);
+		--nav-hover-bg: rgba(31, 58, 80, 0.82);
+		--hero-streak-bg: rgba(18, 40, 58, 0.78);
+		--checkin-bg: linear-gradient(180deg, rgba(11, 24, 36, 0.96), rgba(15, 31, 44, 0.94));
+		--sensor-bg: rgba(11, 24, 36, 0.94);
+		--helper-bg: linear-gradient(180deg, rgba(18, 39, 55, 0.96), rgba(11, 24, 36, 0.94));
+		--field-bg: rgba(16, 33, 46, 0.96);
+		--field-border: rgba(81, 103, 121, 0.42);
+		--slider-bg: rgba(16, 33, 46, 0.96);
+		--button-subtle-bg: rgba(26, 52, 73, 0.9);
+		--chat-shell-bg: rgba(13, 28, 40, 0.72);
+		--chat-bubble-bg: rgba(16, 33, 46, 0.96);
+		--prompt-chip-bg: rgba(16, 33, 46, 0.96);
+		--saved-panel-bg: rgba(18, 39, 55, 0.88);
+		--metric-card-bg: rgba(18, 39, 55, 0.94);
+		--icon-bg: rgba(16, 33, 46, 0.96);
 	}
 
 	:global(html) {
@@ -854,9 +949,9 @@
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.36), transparent 32%),
-			radial-gradient(circle at top right, rgba(183, 211, 255, 0.9), transparent 30%),
-			linear-gradient(180deg, #f8fbff 0%, var(--background) 40%, #edf4ff 100%);
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 32%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 30%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 40%, var(--body-bottom) 100%);
 		color: var(--on-surface);
 	}
 
@@ -886,14 +981,14 @@
 		grid-template-columns: 18rem minmax(0, 1fr);
 		gap: 1.5rem;
 		min-height: 100vh;
-		padding: 1.5rem;
+		padding: 1rem 1.5rem 1.5rem;
 	}
 
 	.auth-shell {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
-		padding: 1.5rem;
+		padding: 1rem 1.5rem 1.5rem;
 	}
 
 	.auth-hero {
@@ -927,8 +1022,8 @@
 	}
 
 	.kit-panel {
-		background: rgba(255, 255, 255, 0.76);
-		border: 1px solid rgba(160, 174, 197, 0.3);
+		background: var(--panel-bg);
+		border: 1px solid var(--panel-border);
 		border-radius: 2rem;
 		box-shadow: var(--shadow-soft);
 		backdrop-filter: blur(18px);
@@ -947,6 +1042,14 @@
 		gap: 1.5rem;
 		height: calc(100vh - 3rem);
 		padding: 1.5rem;
+	}
+
+	.sidebar-head,
+	.mobile-actions {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
 	}
 
 	.brand-kicker,
@@ -1042,7 +1145,7 @@
 	.nav-item:hover,
 	.footer-item:hover {
 		transform: translateY(-1px);
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 	}
 
@@ -1097,7 +1200,7 @@
 		gap: 1rem;
 		min-width: 15rem;
 		padding: 1rem 1.2rem;
-		background: rgba(211, 228, 255, 0.72);
+		background: var(--hero-streak-bg);
 	}
 
 	.hero-streak-icon,
@@ -1153,17 +1256,21 @@
 
 	.checkin-card {
 		grid-column: span 8;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		background: var(--checkin-bg);
 	}
 
 	.sensor-card {
 		grid-column: span 5;
-		background: rgba(255, 255, 255, 0.92);
+		background: var(--sensor-bg);
 	}
 
 	.helper-card {
 		grid-column: span 7;
-		background: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		background: var(--helper-bg);
+	}
+
+	.stress-card .meta-label {
+		color: #ffffff;
 	}
 
 	.card-topline,
@@ -1295,7 +1402,7 @@
 		padding: 1.1rem;
 		border-radius: 1.5rem;
 		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: rgba(255, 255, 255, 0.8);
+		background: var(--slider-bg);
 	}
 
 	.slider-title {
@@ -1333,12 +1440,12 @@
 	.persona-select select,
 	.message-input {
 		width: 100%;
-		border: 1px solid rgba(160, 174, 197, 0.38);
+		border: 1px solid var(--field-border);
 		border-radius: 1.15rem;
 		padding: 0.95rem 1rem;
 		font: inherit;
 		color: var(--on-surface);
-		background: rgba(255, 255, 255, 0.88);
+		background: var(--field-bg);
 	}
 
 	input[type='range'] {
@@ -1416,7 +1523,7 @@
 	}
 
 	.button-subtle {
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--button-subtle-bg);
 		color: var(--on-surface);
 		box-shadow: none;
 	}
@@ -1432,7 +1539,7 @@
 		margin-top: 1rem;
 		padding: 1rem;
 		border-radius: 1.4rem;
-		background: rgba(211, 228, 255, 0.58);
+		background: var(--saved-panel-bg);
 		border: 1px solid rgba(160, 174, 197, 0.24);
 	}
 
@@ -1463,7 +1570,7 @@
 
 	.metric-card {
 		flex: 1;
-		background: var(--surface-container);
+		background: var(--metric-card-bg);
 	}
 
 	.metric-value {
@@ -1520,7 +1627,7 @@
 		padding: 1rem;
 		margin-top: 1rem;
 		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.55);
+		background: var(--chat-shell-bg);
 		min-height: 14rem;
 	}
 
@@ -1528,7 +1635,7 @@
 		max-width: 85%;
 		padding: 0.95rem 1rem;
 		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
-		background: white;
+		background: var(--chat-bubble-bg);
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
 	}
 
@@ -1562,7 +1669,7 @@
 	.prompt-chip {
 		padding: 0.7rem 0.95rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--prompt-chip-bg);
 		color: var(--primary);
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -1651,7 +1758,7 @@
 		width: 2.9rem;
 		height: 2.9rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--icon-bg);
 		color: var(--primary);
 	}
 
