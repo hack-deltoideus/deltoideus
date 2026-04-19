@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import riveCanvas from '@rive-app/canvas';
 	import otterRiv from '../../assets/otter_boy.riv?url';
 
-	type RiveInstance = InstanceType<(typeof riveCanvas)['Rive']>;
-	type ViewModelInstance = InstanceType<(typeof riveCanvas)['ViewModelInstance']>;
-	const { Rive } = riveCanvas;
+	type Variant = 'card' | 'hero' | 'stacked';
+	let { variant = 'card' }: { variant?: Variant } = $props();
+
+	type RiveModule = typeof import('@rive-app/canvas');
+	type RiveInstance = InstanceType<RiveModule['Rive']>;
+	type ViewModelInstance = InstanceType<RiveModule['ViewModelInstance']>;
 
 	const ARTBOARD = 'Artboard';
 	const STATE_MACHINE = 'State Machine 1';
@@ -46,32 +48,47 @@
 	}
 
 	onMount(() => {
-		rive = new Rive({
-			src: otterRiv,
-			canvas,
-			artboard: ARTBOARD,
-			stateMachines: STATE_MACHINE,
-			autoplay: true,
-			onLoad: () => {
-				isLoaded = true;
-				loadError = '';
-				resolveViewModelInstance();
-				rive?.setupRiveListeners();
-				resizeSurface();
-			},
-			onLoadError: (event) => {
-				loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Kelp.';
-			}
-		});
+		let disposed = false;
 
-		resizeObserver = new ResizeObserver(() => {
-			resizeSurface();
-		});
-		resizeObserver.observe(host);
+		void import('@rive-app/canvas')
+			.then((riveCanvas) => {
+				if (disposed) {
+					return;
+				}
 
-		window.addEventListener('resize', resizeSurface);
+				const { Rive } = riveCanvas;
+
+				rive = new Rive({
+					src: otterRiv,
+					canvas,
+					artboard: ARTBOARD,
+					stateMachines: STATE_MACHINE,
+					autoplay: true,
+					onLoad: () => {
+						isLoaded = true;
+						loadError = '';
+						resolveViewModelInstance();
+						rive?.setupRiveListeners();
+						resizeSurface();
+					},
+					onLoadError: (event) => {
+						loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Oy.';
+					}
+				});
+
+				resizeObserver = new ResizeObserver(() => {
+					resizeSurface();
+				});
+				resizeObserver.observe(host);
+
+				window.addEventListener('resize', resizeSurface);
+			})
+			.catch((error) => {
+				loadError = error instanceof Error ? error.message : 'Unable to load Oy.';
+			});
 
 		return () => {
+			disposed = true;
 			window.removeEventListener('resize', resizeSurface);
 			resizeObserver?.disconnect();
 			resizeObserver = null;
@@ -87,32 +104,48 @@
 	});
 </script>
 
-<div class="rive-card">
+<div class:rive-card={variant === 'card' || variant === 'stacked'} class:rive-hero={variant === 'hero'} class:rive-stacked={variant === 'stacked'}>
 	<div
 		bind:this={host}
 		class="rive-shell"
 		role="button"
 		tabindex="0"
 		onkeydown={handleKeydown}
-		aria-label="Tap Kelp to animate"
+		aria-label="Tap Oy to animate"
 	>
 		<canvas bind:this={canvas} class="rive-canvas" width={500} height={369}></canvas>
 	</div>
 
-	<div class="rive-copy">
-		<p class="rive-title">Tap Kelp</p>
-		<p class="rive-subtitle">
-			A quick click plays Kelp&apos;s reaction while the chat stays ready below.
-		</p>
+	{#if variant === 'card'}
+		<div class="rive-copy">
+			<p class="rive-title">Tap Oy</p>
+			<p class="rive-subtitle">
+				A quick click plays Oy&apos;s reaction while the chat stays ready below.
+			</p>
+			{#if loadError}
+				<p class="rive-status rive-status-error">{loadError}</p>
+			{:else if !isLoaded}
+				<p class="rive-status">Loading Oy...</p>
+			{/if}
+		</div>
+	{:else}
 		{#if loadError}
-			<p class="rive-status rive-status-error">{loadError}</p>
+			<p class="rive-hero-status rive-status-error">{loadError}</p>
 		{:else if !isLoaded}
-			<p class="rive-status">Loading Kelp...</p>
+			<p class="rive-hero-status">Loading Oy...</p>
 		{/if}
-	</div>
+	{/if}
 </div>
 
 <style>
+	.rive-hero {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		padding: 1.5rem;
+	}
+
 	.rive-card {
 		display: grid;
 		grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
@@ -140,6 +173,12 @@
 		overflow: hidden;
 	}
 
+	.rive-hero .rive-shell {
+		width: min(100%, 36rem);
+		background: transparent;
+		box-shadow: none;
+	}
+
 	.rive-shell:focus-visible {
 		outline: 3px solid rgba(0, 103, 92, 0.28);
 		outline-offset: 4px;
@@ -155,6 +194,28 @@
 	.rive-copy {
 		display: grid;
 		gap: 0.35rem;
+	}
+
+	.rive-stacked {
+		grid-template-columns: 1fr;
+	}
+
+	.rive-stacked .rive-copy {
+		order: -1;
+	}
+
+	.rive-hero-status {
+		position: absolute;
+		left: 50%;
+		bottom: 1.5rem;
+		transform: translateX(-50%);
+		margin: 0;
+		padding: 0.45rem 0.75rem;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.78);
+		color: var(--on-surface-variant);
+		font-size: 0.85rem;
+		font-weight: 600;
 	}
 
 	.rive-title,
@@ -184,6 +245,16 @@
 	@media (max-width: 720px) {
 		.rive-card {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 980px) {
+		.rive-card {
+			grid-template-columns: 1fr;
+		}
+
+		.rive-copy {
+			order: -1;
 		}
 	}
 </style>

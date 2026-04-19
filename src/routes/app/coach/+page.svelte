@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { onMount, tick } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
+	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -150,7 +151,7 @@
 
 		const question = helperQuestion.trim();
 		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
+			helperStatus = 'Add a question for Oy first.';
 			return;
 		}
 
@@ -181,7 +182,7 @@
 
 			const reply = payload.reply ?? '';
 			if (!reply) {
-				throw new Error('Kelp returned an empty response.');
+				throw new Error('Oy returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
@@ -192,7 +193,7 @@
 			helperQuestion = '';
 			void scrollHelperToBottom();
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
+			helperStatus = payload?.warning ?? 'Oy replied.';
 		} catch (error) {
 			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
@@ -215,17 +216,17 @@
 </script>
 
 <svelte:head>
-	<title>Sanctuary | Kelp Coach</title>
+	<title>Sanctuary | Oy Coach</title>
 </svelte:head>
 
 {#if !currentUser}
 	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-card">
-			<p class="eyebrow">Kelp Coach</p>
+			<p class="eyebrow">Oy Coach</p>
 			<h1>Sign in to open your dedicated coaching space.</h1>
 			<p class="auth-copy">
-				Kelp works best when it can stay with your conversation, so this screen is reserved for your signed-in session.
+				Oy works best when it can stay with your conversation, so this screen is reserved for your signed-in session.
 			</p>
 
 			<div class="auth-actions">
@@ -247,25 +248,12 @@
 {:else}
 	<SiteNav />
 	<main class="coach-shell">
-		<section class="coach-hero">
-			<div>
-				<p class="eyebrow">AI Coach</p>
-				<h1>Kelp, in a dedicated workspace</h1>
-				<p class="hero-copy">
-					Ask for grounding, planning, or perspective. The thread stays readable while the composer stays anchored.
-				</p>
-			</div>
-			<div class="hero-actions">
-				<a class="button button-subtle" href="/app">Back to dashboard</a>
-			</div>
-		</section>
-
 		<AppSectionNav />
 
 		<section class="coach-panel">
 			<div class="coach-header">
 				<div>
-					<h2>Ask Kelp</h2>
+					<h2>Ask Oy</h2>
 					<p class="coach-subtitle">Support for {displayName}, one step at a time.</p>
 				</div>
 
@@ -279,68 +267,76 @@
 				</label>
 			</div>
 
-			<div class="chat-shell" bind:this={helperThread}>
-				{#if helperHistory.length > 0}
-					{#each helperHistory as msg}
-						<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-							<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
-							<p>{msg.text}</p>
+			<div class="coach-body">
+				<div class="coach-mascot">
+					<RiveCharacter variant="stacked" />
+				</div>
+
+				<div class="coach-chat-column">
+					<div class="chat-shell" bind:this={helperThread}>
+						{#if helperHistory.length > 0}
+							{#each helperHistory as msg}
+								<div class:chat-user={msg.role === 'user'} class="chat-bubble">
+									<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
+									<p>{msg.text}</p>
+								</div>
+							{/each}
+						{:else}
+							<div class="chat-empty-state">
+								<p class="chat-empty-title">Start the conversation when you're ready.</p>
+								<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
+							</div>
+						{/if}
+
+						{#if isAskingHelper}
+							<div class="chat-bubble chat-bubble-status">
+								<p class="chat-author">Oy</p>
+								<p>Thinking through this...</p>
+							</div>
+						{/if}
+					</div>
+
+					<div class="helper-composer">
+						<div class="prompt-row" aria-label="Suggested prompts">
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
+								Help me focus
+							</button>
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
+								Log a victory
+							</button>
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
+								Quick breathwork
+							</button>
 						</div>
-					{/each}
-				{:else}
-					<div class="chat-empty-state">
-						<p class="chat-empty-title">Start the conversation when you're ready.</p>
-						<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
+
+						<div class="message-row">
+						<textarea
+							class="message-input"
+							bind:value={helperQuestion}
+							placeholder="Message Oy..."
+							maxlength="700"
+							rows="1"
+							onkeydown={handleHelperComposerKeydown}
+						></textarea>
+							<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
+								<span class="material-symbols-outlined">send</span>
+							</button>
+						</div>
+
+						<div class="helper-meta">
+							<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
+							{#if helperSource}
+								<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
+									{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+								</p>
+							{/if}
+						</div>
+
+						{#if helperStatus}
+							<p class="inline-status">{helperStatus}</p>
+						{/if}
 					</div>
-				{/if}
-
-				{#if isAskingHelper}
-					<div class="chat-bubble chat-bubble-status">
-						<p class="chat-author">Kelp</p>
-						<p>Thinking through this...</p>
-					</div>
-				{/if}
-			</div>
-
-			<div class="helper-composer">
-				<div class="prompt-row" aria-label="Suggested prompts">
-					<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
-						Help me focus
-					</button>
-					<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
-						Log a victory
-					</button>
-					<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
-						Quick breathwork
-					</button>
 				</div>
-
-				<div class="message-row">
-					<textarea
-						class="message-input"
-						bind:value={helperQuestion}
-						placeholder="Message Kelp..."
-						maxlength="700"
-						rows="3"
-						onkeydown={handleHelperComposerKeydown}
-					></textarea>
-					<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-						<span class="material-symbols-outlined">send</span>
-					</button>
-				</div>
-
-				<div class="helper-meta">
-					<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
-					{#if helperSource}
-						<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-							{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-						</p>
-					{/if}
-				</div>
-
-				{#if helperStatus}
-					<p class="inline-status">{helperStatus}</p>
-				{/if}
 			</div>
 		</section>
 	</main>
@@ -419,15 +415,19 @@
 
 	.auth-shell,
 	.coach-shell {
-		max-width: 84rem;
-		margin: 0 auto;
-		padding: 1.25rem 1.5rem 3.2rem;
+		padding: 1.2rem 1.5rem 3.2rem;
 	}
 
 	.auth-shell {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
+	}
+
+	.coach-shell > :global(.section-nav),
+	.coach-shell > .coach-panel {
+		width: min(100%, 84rem);
+		margin-inline: auto;
 	}
 
 	.auth-card,
@@ -454,8 +454,7 @@
 		color: var(--on-surface-variant);
 	}
 
-	.auth-card h1,
-	.coach-hero h1 {
+	.auth-card h1 {
 		margin: 0;
 		font-size: clamp(2.8rem, 5.8vw, 4.6rem);
 		line-height: 0.98;
@@ -465,14 +464,12 @@
 	}
 
 	.auth-copy,
-	.hero-copy,
 	.coach-subtitle,
 	.composer-hint {
 		color: var(--on-surface-variant);
 	}
 
-	.auth-copy,
-	.hero-copy {
+	.auth-copy {
 		margin-top: 0.95rem;
 		font-size: 1.1rem;
 		line-height: 1.68;
@@ -520,20 +517,33 @@
 		color: var(--on-surface);
 	}
 
-	.coach-hero {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 1.4rem;
-		padding: 0.8rem 0.1rem 1.35rem;
-	}
-
 	.coach-panel {
 		display: grid;
-		grid-template-rows: auto minmax(0, 1fr) auto;
+		grid-template-rows: auto minmax(0, 1fr);
 		gap: 1.15rem;
+		margin-top: 0.8rem;
 		min-height: calc(100vh - 16rem);
 		padding: 1.55rem;
+	}
+
+	.coach-body {
+		display: grid;
+		grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
+		gap: 1.15rem;
+		align-items: start;
+		min-height: 0;
+	}
+
+	.coach-mascot,
+	.coach-chat-column {
+		min-width: 0;
+	}
+
+	.coach-chat-column {
+		display: grid;
+		grid-template-rows: minmax(0, 1fr) auto;
+		gap: 1rem;
+		min-height: 0;
 	}
 
 	.coach-header h2 {
@@ -656,11 +666,15 @@
 
 	.message-row {
 		position: relative;
+		display: flex;
+		align-items: center;
+		overflow: hidden;
+		border-radius: 1.35rem;
 	}
 
 	.message-input {
-		min-height: 5rem;
-		padding: 1rem 4.2rem 1rem 1rem;
+		min-height: 2.85rem;
+		padding: 0.55rem 6.35rem 0.55rem 1rem;
 		border-radius: 1.35rem;
 		line-height: 1.55;
 		resize: none;
@@ -668,13 +682,13 @@
 
 	.send-button {
 		position: absolute;
-		right: 0.55rem;
-		bottom: 0.55rem;
+		top: 0.45rem;
+		right: 0.45rem;
+		bottom: 0.45rem;
 		display: grid;
 		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		border-radius: 0.95rem;
+		width: 4.15rem;
+		border-radius: 1rem;
 		background: var(--primary);
 		color: white;
 		cursor: pointer;
@@ -732,13 +746,8 @@
 			padding-inline: 1rem;
 		}
 
-		.coach-hero {
-			flex-direction: column;
-			align-items: start;
-		}
-
-		.coach-hero h1 {
-			max-width: none;
+		.coach-body {
+			grid-template-columns: 1fr;
 		}
 
 		.coach-panel {

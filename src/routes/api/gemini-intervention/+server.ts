@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { generateGeminiTextWithFallbacks } from '$lib/server/gemini';
+import { collectGeminiApiKeys, generateGeminiTextWithFallbacks } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type GeminiRequestBody = {
@@ -28,6 +28,25 @@ function shouldUseFallback(result: { ok: false; status: number; message: string 
   );
 }
 
+function buildFallbackWarning(result: { status: number; message: string; model: string }, label: string): string {
+  const normalized = result.message.toLowerCase();
+  const retryMatch = result.message.match(/retry in ([\d.]+)s/i);
+  const retrySeconds = retryMatch ? Math.max(1, Math.ceil(Number.parseFloat(retryMatch[1] ?? '0'))) : null;
+
+  if (
+    result.status === 429 ||
+    normalized.includes('quota exceeded') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('rate limit')
+  ) {
+    return retrySeconds
+      ? `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
+      : `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+  }
+
+  return `Gemini is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+}
+
 function fallbackInterventionPlan(body: GeminiRequestBody): string {
   const high = body.stressLevel === 'high' || (body.stressScore ?? 0) >= 70;
 
@@ -42,10 +61,19 @@ function fallbackInterventionPlan(body: GeminiRequestBody): string {
 }
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
-  const apiKey = env.GEMINI_KEY || env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
-  if (!apiKey) {
+  const apiKeys = collectGeminiApiKeys([
+    env.GEMINI_KEY,
+    env.GEMINI_FALLBACK_KEY,
+    env.GEMINI_KEYS,
+    env.GEMINI_API_KEY,
+    env.GOOGLE_API_KEY
+  ]);
+  if (apiKeys.length === 0) {
     return json(
-      { error: 'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY.' },
+      {
+        error:
+          'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_FALLBACK_KEY, GEMINI_KEYS, GEMINI_API_KEY, or GOOGLE_API_KEY.'
+      },
       { status: 500 }
     );
   }
@@ -73,7 +101,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   ].join('\n');
 
   const result = await generateGeminiTextWithFallbacks({
-    apiKey,
+    apiKeys,
     fetch,
     prompt,
     temperature: 0.4,
@@ -84,7 +112,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   if (!result.ok && shouldUseFallback(result)) {
     return json({
       plan: fallbackInterventionPlan(body),
-      warning: `Gemini is temporarily unavailable. Showing local fallback intervention plan instead. (${result.model})`,
+      warning: buildFallbackWarning(result, 'intervention plan'),
       source: 'fallback'
     });
   }

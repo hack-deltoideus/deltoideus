@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
+	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
@@ -15,48 +16,65 @@
 	type OAuthProvider = 'google';
 
 	type CalendarDay = {
+		dateValue: string | null;
 		day: number | null;
-		active?: boolean;
-		hasDot?: boolean;
+		isSelected: boolean;
+		hasSessions: boolean;
+		sessionCount: number;
+	};
+
+	type SessionSummaryPayload = {
+		startedAt: string;
+		durationSeconds: number;
+		averageHeartRate: number | null;
+		captureType: string;
+	};
+
+	type SensorSessionRecord = {
+		id: string;
+		started_at: string;
+		duration_seconds: number | null;
+		avg_heart_rate: number | null;
+		capture_type: string | null;
+		summary_payload: SessionSummaryPayload | null;
 	};
 
 	let currentSession = $state<Session | null>(null);
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
+	let isLoadingSessions = $state(false);
+	let calendarStatus = $state('');
+	let selectedDate = $state('');
+	let visibleMonth = $state(getMonthStart(new Date()));
+	let sessions = $state<SensorSessionRecord[]>([]);
 
-	const monthLabel = 'October 2023';
 	const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-	const calendarDays: CalendarDay[] = [
-		{ day: null },
-		{ day: null },
-		{ day: null },
-		{ day: null },
-		{ day: 1 },
-		{ day: 2, hasDot: true },
-		{ day: 3, hasDot: true },
-		{ day: 4 },
-		{ day: 5, hasDot: true },
-		{ day: 6 },
-		{ day: 7 },
-		{ day: 8, hasDot: true },
-		{ day: 9, active: true, hasDot: true },
-		{ day: 10 },
-		{ day: 11, hasDot: true },
-		{ day: 12 },
-		{ day: 13, hasDot: true },
-		{ day: 14, hasDot: true },
-		{ day: 15 },
-		{ day: 16 },
-		{ day: 17, hasDot: true },
-		{ day: 18 },
-		{ day: 19, hasDot: true },
-		{ day: 20 },
-		{ day: 21, hasDot: true },
-		{ day: 22 },
-		{ day: 23, hasDot: true },
-		{ day: 24 }
-	];
+	const monthLabel = $derived(
+		visibleMonth.toLocaleDateString([], {
+			month: 'long',
+			year: 'numeric'
+		})
+	);
+	const sessionCountsByDate = $derived(
+		sessions.reduce<Record<string, number>>((counts, session) => {
+			const dateValue = getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at);
+			counts[dateValue] = (counts[dateValue] ?? 0) + 1;
+			return counts;
+		}, {})
+	);
+	const calendarDays = $derived(buildCalendarDays(visibleMonth, selectedDate, sessionCountsByDate));
+	const selectedDaySessions = $derived(
+		selectedDate
+			? sessions.filter(
+					(session) =>
+						getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate
+				)
+			: []
+	);
+	const selectedAverageHeartRate = $derived(averageHeartRateForSessions(selectedDaySessions));
+	const selectedTotalDurationMinutes = $derived(totalDurationMinutes(selectedDaySessions));
+	const selectedActivityLabel = $derived(primaryActivityLabel(selectedDaySessions));
 
 	onMount(() => {
 		if (!supabase) {
@@ -71,6 +89,9 @@
 
 			currentSession = data.session;
 			currentUser = data.session?.user ?? null;
+			if (data.session?.user) {
+				void loadCalendarSessions(data.session.user.id);
+			}
 		});
 
 		const {
@@ -79,6 +100,13 @@
 			currentSession = session;
 			currentUser = session?.user ?? null;
 			authStatus = '';
+			if (session?.user) {
+				void loadCalendarSessions(session.user.id);
+			} else {
+				sessions = [];
+				selectedDate = '';
+				visibleMonth = getMonthStart(new Date());
+			}
 		});
 
 		return () => {
@@ -131,6 +159,164 @@
 			isSigningIn = null;
 		}
 	}
+
+	async function loadCalendarSessions(userId: string) {
+		if (!supabase) {
+			return;
+		}
+
+		isLoadingSessions = true;
+		calendarStatus = '';
+
+		try {
+			const { data, error } = await supabase
+				.from('sensor_sessions')
+				.select('id, started_at, duration_seconds, avg_heart_rate, capture_type, summary_payload')
+				.eq('user_id', userId)
+				.order('started_at', { ascending: false })
+				.limit(120);
+
+			if (error) {
+				throw error;
+			}
+
+			sessions = (data ?? []) as SensorSessionRecord[];
+
+			const latestSessionDate = sessions[0]
+				? new Date(sessions[0].summary_payload?.startedAt ?? sessions[0].started_at)
+				: new Date();
+			visibleMonth = getMonthStart(latestSessionDate);
+
+			if (sessions.length > 0) {
+				selectedDate = getSessionDateValue(sessions[0].summary_payload?.startedAt ?? sessions[0].started_at);
+			} else {
+				selectedDate = '';
+			}
+		} catch (error) {
+			calendarStatus = describeError(error, 'Failed to load calendar sessions.');
+		} finally {
+			isLoadingSessions = false;
+		}
+	}
+
+	function getMonthStart(date: Date): Date {
+		return new Date(date.getFullYear(), date.getMonth(), 1);
+	}
+
+	function getSessionDateValue(dateString: string): string {
+		return new Date(dateString).toISOString().slice(0, 10);
+	}
+
+	function buildCalendarDays(
+		month: Date,
+		activeDate: string,
+		countsByDate: Record<string, number>
+	): CalendarDay[] {
+		const year = month.getFullYear();
+		const monthIndex = month.getMonth();
+		const firstDay = new Date(year, monthIndex, 1);
+		const startOffset = (firstDay.getDay() + 6) % 7;
+		const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+		const cells: CalendarDay[] = [];
+
+		for (let index = 0; index < startOffset; index += 1) {
+			cells.push({
+				dateValue: null,
+				day: null,
+				isSelected: false,
+				hasSessions: false,
+				sessionCount: 0
+			});
+		}
+
+		for (let day = 1; day <= daysInMonth; day += 1) {
+			const dateValue = new Date(Date.UTC(year, monthIndex, day)).toISOString().slice(0, 10);
+			const sessionCount = countsByDate[dateValue] ?? 0;
+
+			cells.push({
+				dateValue,
+				day,
+				isSelected: activeDate === dateValue,
+				hasSessions: sessionCount > 0,
+				sessionCount
+			});
+		}
+
+		return cells;
+	}
+
+	function goToPreviousMonth() {
+		visibleMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1);
+	}
+
+	function goToNextMonth() {
+		visibleMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1);
+	}
+
+	function selectCalendarDay(day: CalendarDay) {
+		if (!day.dateValue) {
+			return;
+		}
+
+		selectedDate = day.dateValue;
+	}
+
+	function formatSelectedDate(dateValue: string): string {
+		return new Date(`${dateValue}T12:00:00`).toLocaleDateString([], {
+			month: 'long',
+			day: 'numeric',
+			year: 'numeric'
+		});
+	}
+
+	function averageHeartRateForSessions(daySessions: SensorSessionRecord[]): number | null {
+		const values = daySessions
+			.map((session) => session.summary_payload?.averageHeartRate ?? session.avg_heart_rate)
+			.filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
+
+		if (values.length === 0) {
+			return null;
+		}
+
+		return values.reduce((total, value) => total + value, 0) / values.length;
+	}
+
+	function totalDurationMinutes(daySessions: SensorSessionRecord[]): number {
+		return Math.round(
+			daySessions.reduce(
+				(total, session) =>
+					total + ((session.summary_payload?.durationSeconds ?? session.duration_seconds ?? 0) / 60),
+				0
+			)
+		);
+	}
+
+	function formatMetric(value: number | null | undefined, digits = 0): string {
+		if (typeof value !== 'number' || Number.isNaN(value)) {
+			return '--';
+		}
+
+		return value.toFixed(digits);
+	}
+
+	function formatActivityLabel(value: string | null | undefined): string {
+		if (!value) {
+			return 'Sensor Session';
+		}
+
+		return value
+			.split(/[_-]+/)
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+			.join(' ');
+	}
+
+	function primaryActivityLabel(daySessions: SensorSessionRecord[]): string {
+		if (daySessions.length === 0) {
+			return 'No activity logged';
+		}
+
+		return formatActivityLabel(daySessions[0]?.summary_payload?.captureType ?? daySessions[0]?.capture_type);
+	}
 </script>
 
 <svelte:head>
@@ -138,6 +324,7 @@
 </svelte:head>
 
 {#if !currentUser}
+	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-card">
 			<p class="eyebrow">Calendar</p>
@@ -163,29 +350,23 @@
 		</section>
 	</main>
 {:else}
+	<SiteNav />
 	<main class="calendar-page">
 		<section class="calendar-frame">
-			<header class="page-head">
-				<div>
-					<p class="eyebrow">Sanctuary Calendar</p>
-					<h1>Visualize your journey to inner peace.</h1>
-				</div>
-				<a class="back-link" href="/app/history">
-					<span class="material-symbols-outlined">history</span>
-					<span>Back to history</span>
-				</a>
-			</header>
-
 			<AppSectionNav />
+
+			{#if calendarStatus}
+				<p class="inline-status">{calendarStatus}</p>
+			{/if}
 
 			<div class="calendar-layout">
 				<section class="calendar-main">
 					<div class="month-bar">
-						<button type="button" aria-label="Previous month">
+						<button type="button" aria-label="Previous month" onclick={goToPreviousMonth}>
 							<span class="material-symbols-outlined">chevron_left</span>
 						</button>
 						<strong>{monthLabel}</strong>
-						<button type="button" aria-label="Next month">
+						<button type="button" aria-label="Next month" onclick={goToNextMonth}>
 							<span class="material-symbols-outlined">chevron_right</span>
 						</button>
 					</div>
@@ -200,9 +381,17 @@
 						<div class="calendar-grid day-grid">
 							{#each calendarDays as cell}
 								<div class="day-cell">
-									{#if cell.day}
-										<div class:active={cell.active} class="day-pill">{cell.day}</div>
-										{#if cell.hasDot}
+									{#if cell.dateValue}
+										<button
+											type="button"
+											class:active={cell.isSelected}
+											class="day-pill"
+											onclick={() => selectCalendarDay(cell)}
+											aria-label={`${cell.day}, ${cell.sessionCount} session${cell.sessionCount === 1 ? '' : 's'}`}
+										>
+											{cell.day}
+										</button>
+										{#if cell.hasSessions}
 											<div class="day-dot"></div>
 										{/if}
 									{/if}
@@ -210,70 +399,52 @@
 							{/each}
 						</div>
 					</div>
-
-					<div class="insight-grid">
-						<article class="mini-card primary">
-							<div class="icon-wrap">
-								<span class="material-symbols-outlined">auto_awesome</span>
-							</div>
-							<div>
-								<h3>Consistent Streak!</h3>
-								<p>You've checked in for 5 days straight. Your focus is improving.</p>
-							</div>
-						</article>
-
-						<article class="mini-card tertiary">
-							<div class="icon-wrap">
-								<span class="material-symbols-outlined filled">lightbulb</span>
-							</div>
-							<div>
-								<h3>Sanctuary Tip</h3>
-								<p>Tuesdays are your most active days. Try a deeper meditation next week.</p>
-							</div>
-						</article>
-					</div>
 				</section>
 
 				<aside class="summary-panel">
-					<h2>October Summary</h2>
+					<h2>{selectedDate ? formatSelectedDate(selectedDate) : monthLabel}</h2>
 
 					<div class="stat-stack">
 						<div class="stat-card primary-border">
-							<p>Total Activity</p>
+							<p>Average Heart Rate</p>
 							<div>
-								<strong>14</strong>
-								<span>Sessions</span>
+								<strong>{formatMetric(selectedAverageHeartRate, 0)}</strong>
+								<span>bpm</span>
 							</div>
 						</div>
-
-						<div class="stat-card tertiary-border">
-							<p>Average Mood</p>
-							<div class="mood-row">
-								<span class="material-symbols-outlined filled">sentiment_very_satisfied</span>
-								<strong>Happy</strong>
+						<div class="stat-card primary-border">
+							<p>Sessions</p>
+							<div>
+								<strong>{selectedDaySessions.length}</strong>
+								<span>saved</span>
 							</div>
 						</div>
-
-						<div class="stat-card secondary-border">
-							<p>Mindful Minutes</p>
+						<div class="stat-card primary-border">
+							<p>Tracked Activity</p>
+							<div class="stat-copy">
+								<strong>{selectedActivityLabel}</strong>
+							</div>
+						</div>
+						<div class="stat-card primary-border">
+							<p>Total Time</p>
 							<div>
-								<strong>320</strong>
+								<strong>{selectedTotalDurationMinutes}</strong>
 								<span>min</span>
 							</div>
 						</div>
 					</div>
 
-					<div class="quote-stack">
-						<h3>Journal Highlights</h3>
-						<div class="quote-card">
-							<p>"Felt a great sense of calm after the forest soundscape session today."</p>
-							<span>OCT 09</span>
-						</div>
-						<div class="quote-card">
-							<p>"Grateful for the support system I've built this month."</p>
-							<span>OCT 06</span>
-						</div>
-					</div>
+					<p class="summary-copy">
+						{#if isLoadingSessions}
+							Loading your saved sessions...
+						{:else if selectedDate && selectedDaySessions.length > 0}
+							Select another day to inspect a different set of saved sessions.
+						{:else if selectedDate}
+							No saved sessions for this day yet.
+						{:else}
+							Choose a day on the calendar to inspect it.
+						{/if}
+					</p>
 				</aside>
 			</div>
 		</section>
@@ -303,14 +474,6 @@
 			'opsz' 24;
 	}
 
-	.filled {
-		font-variation-settings:
-			'FILL' 1,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
-	}
-
 	.auth-shell {
 		min-height: calc(100vh - 5rem);
 		display: grid;
@@ -321,7 +484,6 @@
 	.auth-card,
 	.calendar-card,
 	.summary-panel,
-	.mini-card,
 	.stat-card {
 		background: rgba(255, 255, 255, 0.84);
 		border: 1px solid rgba(160, 174, 197, 0.24);
@@ -344,8 +506,7 @@
 		color: #00675c;
 	}
 
-	.auth-card h1,
-	.page-head h1 {
+	.auth-card h1 {
 		margin: 0.35rem 0 0;
 		line-height: 0.96;
 		letter-spacing: -0.04em;
@@ -359,9 +520,6 @@
 	.auth-copy,
 	.inline-hint,
 	.inline-status,
-	.page-head p,
-	.mini-card p,
-	.quote-card p,
 	.stat-card p {
 		margin: 0;
 		line-height: 1.55;
@@ -377,7 +535,6 @@
 
 	.button,
 	.button-subtle,
-	.back-link,
 	.month-bar button {
 		display: inline-flex;
 		align-items: center;
@@ -398,8 +555,7 @@
 		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
 	}
 
-	.button-subtle,
-	.back-link {
+	.button-subtle {
 		background: rgba(201, 222, 255, 0.7);
 		color: #212f42;
 	}
@@ -411,22 +567,8 @@
 	.calendar-frame {
 		display: grid;
 		gap: 1.35rem;
-		max-width: 96rem;
+		max-width: 84rem;
 		margin: 0 auto;
-	}
-
-	.page-head {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 1rem;
-		padding-top: 0.4rem;
-	}
-
-	.page-head h1 {
-		font-size: clamp(2.5rem, 5vw, 4.5rem);
-		color: #212f42;
-		max-width: 38rem;
 	}
 
 	.calendar-layout {
@@ -465,8 +607,7 @@
 	}
 
 	.calendar-card,
-	.summary-panel,
-	.mini-card {
+	.summary-panel {
 		border-radius: 2rem;
 		padding: 1.6rem;
 	}
@@ -505,9 +646,23 @@
 		height: 3rem;
 		display: grid;
 		place-items: center;
+		padding: 0;
+		border: 0;
 		border-radius: 999px;
+		background: transparent;
 		font-weight: 700;
+		font: inherit;
 		color: #212f42;
+		cursor: pointer;
+		transition:
+			transform 160ms ease,
+			background 160ms ease,
+			box-shadow 160ms ease;
+	}
+
+	.day-pill:hover {
+		transform: translateY(-1px);
+		background: rgba(183, 211, 255, 0.35);
 	}
 
 	.day-pill.active {
@@ -524,45 +679,7 @@
 		background: #00675c;
 	}
 
-	.insight-grid {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 1rem;
-	}
-
-	.mini-card {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-	}
-
-	.mini-card.primary {
-		background: rgba(91, 244, 222, 0.16);
-	}
-
-	.mini-card.tertiary {
-		background: rgba(252, 192, 37, 0.16);
-	}
-
-	.icon-wrap {
-		width: 4rem;
-		height: 4rem;
-		display: grid;
-		place-items: center;
-		border-radius: 999px;
-		background: #00675c;
-		color: white;
-		flex-shrink: 0;
-	}
-
-	.mini-card.tertiary .icon-wrap {
-		background: #fcc025;
-		color: #3d2b00;
-	}
-
-	.mini-card h3,
-	.summary-panel h2,
-	.quote-stack h3 {
+	.summary-panel h2 {
 		margin: 0;
 	}
 
@@ -575,8 +692,7 @@
 		font-size: 1.5rem;
 	}
 
-	.stat-stack,
-	.quote-stack {
+	.stat-stack {
 		display: grid;
 		gap: 0.9rem;
 	}
@@ -590,14 +706,6 @@
 
 	.primary-border {
 		border-bottom-color: #00675c;
-	}
-
-	.tertiary-border {
-		border-bottom-color: #fcc025;
-	}
-
-	.secondary-border {
-		border-bottom-color: #b7d3ff;
 	}
 
 	.stat-card p {
@@ -614,6 +722,10 @@
 		margin-top: 0.4rem;
 	}
 
+	.stat-copy {
+		align-items: flex-start;
+	}
+
 	.stat-card strong {
 		font-size: 2.6rem;
 		line-height: 1;
@@ -624,28 +736,15 @@
 		font-weight: 600;
 	}
 
-	.mood-row {
-		align-items: center;
+	.stat-copy strong {
+		font-size: 1.1rem;
+		line-height: 1.45;
 	}
 
-	.mood-row .material-symbols-outlined {
-		font-size: 2rem;
-		color: #755600;
-	}
-
-	.quote-card {
-		padding: 1rem 1.1rem;
-		border-radius: 1.25rem;
-		background: rgba(255, 255, 255, 0.54);
-	}
-
-	.quote-card span {
-		display: block;
-		margin-top: 0.55rem;
-		font-size: 0.7rem;
-		font-weight: 800;
-		letter-spacing: 0.12em;
-		color: #00675c;
+	.summary-copy {
+		margin: 0;
+		line-height: 1.55;
+		color: #4e5c71;
 	}
 
 	@media (max-width: 980px) {
@@ -659,13 +758,5 @@
 			padding-inline: 1rem;
 		}
 
-		.page-head {
-			flex-direction: column;
-			align-items: start;
-		}
-
-		.insight-grid {
-			grid-template-columns: 1fr;
-		}
 	}
 </style>

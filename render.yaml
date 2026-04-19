@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: deltoideus
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    autoDeploy: true
+    envVars:
+      - key: PUBLIC_SUPABASE_URL
+        sync: false
+      - key: PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: GEMINI_KEY
+        sync: false
+      - key: GEMINI_FALLBACK_KEY
+        sync: false
+      - key: GEMINI_KEYS
+        sync: false
+      - key: GEMINI_MODEL
+        sync: false

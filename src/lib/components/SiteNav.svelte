@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
+	import { sensorSession } from '$lib/sensor-session';
 	import { onMount } from 'svelte';
 	import { supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -19,6 +20,7 @@
 	let authStatus = $state('');
 	let isSigningIn = $state(false);
 	let isSigningOut = $state(false);
+	let sessionStartedAt = $state<string | null>(null);
 	let themeMode = $state<ThemeMode>('light');
 
 	const pathname = $derived(page.url.pathname);
@@ -26,8 +28,13 @@
 	const showHome = $derived(currentUser !== null && pathname !== '/');
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
+	const showRecordingDot = $derived(Boolean(currentUser && sessionStartedAt));
 
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			sessionStartedAt = state.sessionStartedAt;
+		});
+
 		if (browser) {
 			const storedTheme = window.localStorage.getItem('sanctuary-theme');
 			themeMode = storedTheme === 'dark' ? 'dark' : 'light';
@@ -35,7 +42,9 @@
 		}
 
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -57,6 +66,7 @@
 		});
 
 		return () => {
+			unsubscribeSensor();
 			subscription.unsubscribe();
 		};
 	});
@@ -169,9 +179,12 @@
 	}
 </script>
 
+<div class="site-brand-shell">
+	<a class="site-brand" href="/">Study Buddy</a>
+</div>
+
 <header class="site-nav-shell">
 	<nav class="site-nav">
-		<a class="site-brand" href="/">Sanctuary</a>
 
 		<div class="site-actions">
 			<button class="theme-toggle" type="button" aria-label="Toggle theme" onclick={toggleTheme}>
@@ -187,12 +200,15 @@
 				{#if showHome}
 					<a class="site-button site-button-secondary" href="/">Home</a>
 				{/if}
-				<button class="site-button site-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
+				<button class="site-button site-button-secondary" type="button" onclick={signOut} disabled={isSigningOut}>
 					{isSigningOut ? 'Signing out...' : 'Sign out'}
 				</button>
 				<div class="user-chip" aria-label="Signed in user">
 					<span class="user-avatar">{avatarLetter}</span>
 					<span class="user-name">{displayName}</span>
+					{#if showRecordingDot}
+						<span class="recording-indicator" aria-label="Session recording" title="Session recording"></span>
+					{/if}
 				</div>
 			{:else}
 				<button class="site-button site-button-primary" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
@@ -208,11 +224,21 @@
 </header>
 
 <style>
+	.site-brand-shell {
+		max-width: 82rem;
+		margin: 0 auto;
+		padding: 0 1.25rem;
+		min-height: 4.25rem;
+		display: flex;
+		align-items: center;
+	}
+
 	.site-nav-shell {
 		position: sticky;
 		top: 0;
 		z-index: 90;
-		padding: 1rem 1.25rem 0;
+		margin-top: -4.25rem;
+		padding: 0 1.25rem 0;
 	}
 
 	.site-nav {
@@ -220,16 +246,21 @@
 		margin: 0 auto;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: flex-end;
 		gap: 0.9rem;
-		padding: 0.25rem 0;
+		min-height: 4.25rem;
 	}
 
 	.site-brand {
+		position: relative;
+		z-index: 92;
+		pointer-events: auto;
+		display: inline-block;
 		font-size: 1.3rem;
 		font-weight: 800;
 		color: var(--primary, #00675c);
 		text-decoration: none;
+		line-height: 1;
 		letter-spacing: 0.02em;
 	}
 
@@ -276,13 +307,25 @@
 		width: 2rem;
 		height: 2rem;
 		border-radius: 999px;
-		background: linear-gradient(180deg, #6ef0e2 0%, var(--primary, #00675c) 100%);
+		background: linear-gradient(180deg, var(--primary-glow, #6ef0e2) 0%, var(--primary, #00675c) 100%);
 		color: white;
 		font-weight: 800;
 	}
 
 	.user-name {
 		font-weight: 700;
+	}
+
+	.recording-indicator {
+		width: 0.78rem;
+		height: 0.78rem;
+		border-radius: 999px;
+		background: #ff3048;
+		box-shadow:
+			0 0 0 0.26rem rgba(255, 48, 72, 0.22),
+			0 0 0.7rem rgba(255, 48, 72, 0.5);
+		animation: nav-recording-pulse 1s infinite;
+		flex: 0 0 auto;
 	}
 
 	.site-button {
@@ -325,12 +368,6 @@
 		color: var(--on-surface, #1f2937);
 	}
 
-	.site-button-ghost {
-		background: transparent;
-		color: var(--on-surface-variant, #4e5c71);
-		border: 1px solid color-mix(in srgb, var(--outline-variant, #cbd5e1) 78%, transparent);
-	}
-
 	.site-status {
 		max-width: 82rem;
 		margin: 0.5rem auto 0;
@@ -353,6 +390,7 @@
 	}
 
 	@media (max-width: 560px) {
+		.site-brand-shell,
 		.site-nav-shell {
 			padding-inline: 0.8rem;
 		}
@@ -366,8 +404,7 @@
 		}
 
 		.site-button,
-		.site-button-secondary,
-		.site-button-ghost {
+		.site-button-secondary {
 			flex: 1 1 10rem;
 			text-align: center;
 		}
@@ -375,6 +412,29 @@
 		.user-chip {
 			width: 100%;
 			justify-content: center;
+		}
+	}
+
+	@keyframes nav-recording-pulse {
+		0% {
+			opacity: 1;
+			box-shadow:
+				0 0 0 0 rgba(255, 48, 72, 0.45),
+				0 0 0.8rem rgba(255, 48, 72, 0.55);
+		}
+
+		55% {
+			opacity: 0.4;
+			box-shadow:
+				0 0 0 0.5rem rgba(255, 48, 72, 0),
+				0 0 0.15rem rgba(255, 48, 72, 0.18);
+		}
+
+		100% {
+			opacity: 1;
+			box-shadow:
+				0 0 0 0 rgba(255, 48, 72, 0),
+				0 0 0.8rem rgba(255, 48, 72, 0.55);
 		}
 	}
 </style>

@@ -5,61 +5,18 @@
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import { publishLiveEcgReading } from '$lib/live-ecg-stream';
 	import { connectHeartRateMonitor } from '$lib/polar';
+	import {
+		connectSharedSensor,
+		disconnectSharedSensor,
+		endSharedSession,
+		sensorSession,
+		simulateSharedSpike,
+		startSharedSession,
+		type DiagnosticSample,
+		type SavedDiagnosticSession
+	} from '$lib/sensor-session';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
-
-	type DiagnosticSample = {
-		recorded_at: string;
-		elapsed_ms: number;
-		heart_rate: number;
-		rr_ms: number | null;
-		hrv_ms: number | null;
-	};
-
-	type SavedDiagnosticSession = {
-		id: string;
-		created_at: string;
-		started_at: string;
-		ended_at: string | null;
-		duration_seconds: number | null;
-		avg_heart_rate: number | null;
-		avg_rr_ms: number | null;
-		avg_hrv_ms: number | null;
-		last_hrv_ms: number | null;
-		max_heart_rate: number | null;
-		sample_count: number;
-		device_name: string | null;
-		capture_type: string | null;
-		raw_data_path: string | null;
-		summary_payload: {
-			sessionId: string;
-			userId: string;
-			deviceInfo: {
-				name: string;
-			} | null;
-			captureType: string;
-			startedAt: string;
-			endedAt: string;
-			durationSeconds: number;
-			sampleCount: number;
-			averageHeartRate: number | null;
-			averageRrMs: number | null;
-			averageHrvMs: number | null;
-			lastHrvMs: number | null;
-			maxHeartRate: number | null;
-			segmentLengthSeconds: number;
-			segments: Array<{
-				index: number;
-				startedAt: string;
-				endedAt: string;
-				durationSeconds: number;
-				sampleCount: number;
-				averageHeartRate: number | null;
-				averageRrMs: number | null;
-				averageHrvMs: number | null;
-			}>;
-		} | null;
-	};
 
 	type SupabaseLikeError = {
 		message?: string;
@@ -79,6 +36,7 @@
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
 	let isConnecting = $state(false);
+	let isSavingSession = $state(false);
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
@@ -90,7 +48,7 @@
 	let selectedDiagnosticSessionId = $state<string | null>(null);
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	let showEntryAlert = $state(false);
 
 	const displayName = $derived(getDisplayName(currentUser));
 	const selectedDiagnosticSession = $derived(
@@ -102,8 +60,24 @@
 	}
 
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			heartRate = state.heartRate;
+			rrMs = state.rrMs;
+			hrvMs = state.hrvMs;
+			isConnecting = state.isConnecting;
+			isSavingSession = state.isSavingSession;
+			isSensorConnected = state.isSensorConnected;
+			canUseBluetooth = state.canUseBluetooth;
+			sensorStatus = state.sensorStatus;
+			sessionStartedAt = state.sessionStartedAt;
+			sessionDeviceName = state.sessionDeviceName;
+			sessionSamples = state.sessionSamples;
+		});
+
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -134,9 +108,7 @@
 
 		return () => {
 			subscription.unsubscribe();
-			if (stopSensor) {
-				void stopSensor();
-			}
+			unsubscribeSensor();
 		};
 	});
 
@@ -189,70 +161,6 @@
 		return 'Friend';
 	}
 
-	function averageOf(values: number[]): number | null {
-		if (values.length === 0) {
-			return null;
-		}
-
-		return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
-	}
-
-	function chooseSegmentLengthSeconds(durationSeconds: number): number {
-		return durationSeconds < 20 * 60 ? 60 : 300;
-	}
-
-	function buildSessionSegments(
-		samples: DiagnosticSample[],
-		startedAt: string,
-		durationSeconds: number
-	): Array<{
-		index: number;
-		startedAt: string;
-		endedAt: string;
-		durationSeconds: number;
-		sampleCount: number;
-		averageHeartRate: number | null;
-		averageRrMs: number | null;
-		averageHrvMs: number | null;
-	}> {
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const segmentBuckets = new Map<number, DiagnosticSample[]>();
-
-		for (const sample of samples) {
-			const segmentIndex = Math.floor(sample.elapsed_ms / (segmentLengthSeconds * 1000));
-			const existing = segmentBuckets.get(segmentIndex) ?? [];
-			existing.push(sample);
-			segmentBuckets.set(segmentIndex, existing);
-		}
-
-		return Array.from(segmentBuckets.entries())
-			.sort(([left], [right]) => left - right)
-			.map(([segmentIndex, bucket]) => {
-				const segmentStartedMs = new Date(startedAt).getTime() + segmentIndex * segmentLengthSeconds * 1000;
-				const heartRates = bucket.map((sample) => sample.heart_rate);
-				const rrValues = bucket
-					.map((sample) => sample.rr_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const hrvValues = bucket
-					.map((sample) => sample.hrv_ms)
-					.filter((value): value is number => typeof value === 'number');
-				const endedAtMs = bucket.at(-1)
-					? new Date(startedAt).getTime() + (bucket.at(-1)?.elapsed_ms ?? 0)
-					: segmentStartedMs;
-
-				return {
-					index: segmentIndex + 1,
-					startedAt: new Date(segmentStartedMs).toISOString(),
-					endedAt: new Date(endedAtMs).toISOString(),
-					durationSeconds: Math.max(1, Math.round((endedAtMs - segmentStartedMs) / 1000)),
-					sampleCount: bucket.length,
-					averageHeartRate: averageOf(heartRates),
-					averageRrMs: averageOf(rrValues),
-					averageHrvMs: averageOf(hrvValues)
-				};
-			});
-	}
-
 	function formatSessionDate(dateString: string): string {
 		return new Date(dateString).toLocaleString([], {
 			month: 'short',
@@ -268,6 +176,20 @@
 		}
 
 		return value.toFixed(digits);
+	}
+
+	function formatFullTimestamp(dateString: string | null): string {
+		if (!dateString) {
+			return '--';
+		}
+
+		return new Date(dateString).toLocaleString([], {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
 	}
 
 	async function loadDiagnosticSessions(userId: string) {
@@ -331,12 +253,8 @@
 	}
 
 	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
-
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
+		await connectSharedSensor();
+	}
 
 		try {
 			const startedAt = new Date().toISOString();
@@ -367,153 +285,84 @@
 					}
 				].slice(-600);
 			});
+	function startSession() {
+		startSharedSession(Boolean(currentUser));
+		lastSavedDiagnosticSession = null;
+	}
 
-			sessionDeviceName = 'Polar H9';
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sessionStartedAt = null;
-			sessionSamples = [];
-			sensorStatus = describeError(error, 'Could not connect to sensor');
-		} finally {
-			isConnecting = false;
+	async function endSession() {
+		const result = await endSharedSession(currentUser?.id ?? null);
+		diagnosticStatus = result.warning;
+		if (result.savedSession) {
+			lastSavedDiagnosticSession = result.savedSession;
+			diagnosticSessions = [
+				result.savedSession,
+				...diagnosticSessions.filter((session) => session.id !== result.savedSession?.id)
+			];
+			selectedDiagnosticSessionId = result.savedSession.id;
 		}
 	}
 
 	async function disconnectSensor() {
-		if (!stopSensor) {
+		await disconnectSharedSensor();
+	}
+
+	function simulateSpike() {
+		simulateSharedSpike();
+	}
+
+	async function deleteDiagnosticSession(session: SavedDiagnosticSession) {
+		if (!supabase || !currentUser) {
 			return;
 		}
 
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
+		const confirmed = browser
+			? window.confirm('Delete this saved session and its raw JSON file, if one exists?')
+			: false;
 
-		if (!supabase) {
-			sensorStatus = 'Disconnected. Supabase is not configured, so diagnostics were not saved.';
-			sessionStartedAt = null;
-			sessionSamples = [];
+		if (!confirmed) {
 			return;
 		}
 
-		if (!currentUser) {
-			sensorStatus = 'Disconnected. Sign in to save diagnostics.';
-			sessionStartedAt = null;
-			sessionSamples = [];
-			return;
-		}
-
-		const endedAt = new Date().toISOString();
-		const durationSeconds = sessionStartedAt
-			? Math.max(0, Math.round((new Date(endedAt).getTime() - new Date(sessionStartedAt).getTime()) / 1000))
-			: 0;
-		const heartRates = sessionSamples.map((sample) => sample.heart_rate);
-		const rrValues = sessionSamples
-			.map((sample) => sample.rr_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const hrvValues = sessionSamples
-			.map((sample) => sample.hrv_ms)
-			.filter((value): value is number => typeof value === 'number');
-		const sessionId = crypto.randomUUID();
-		const segmentLengthSeconds = chooseSegmentLengthSeconds(durationSeconds);
-		const summaryPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			averageHeartRate: averageOf(heartRates),
-			averageRrMs: averageOf(rrValues),
-			averageHrvMs: averageOf(hrvValues),
-			lastHrvMs: hrvValues.at(-1) ?? null,
-			maxHeartRate: heartRates.length > 0 ? Math.max(...heartRates) : null,
-			segmentLengthSeconds,
-			segments: buildSessionSegments(sessionSamples, sessionStartedAt ?? endedAt, durationSeconds)
-		};
-		const rawPayload = {
-			sessionId,
-			userId: currentUser.id,
-			deviceInfo: {
-				name: sessionDeviceName ?? 'Polar H9'
-			},
-			captureType: 'polar_h9_hr_hrv',
-			startedAt: sessionStartedAt ?? endedAt,
-			endedAt,
-			durationSeconds,
-			sampleCount: sessionSamples.length,
-			readings: sessionSamples
-		};
-		const rawDataPath = `${currentUser.id}/${sessionId}.json`;
+		diagnosticStatus = '';
 
 		try {
-			const { error: uploadError } = await supabase.storage
-				.from('diagnostic-raw')
-				.upload(rawDataPath, JSON.stringify(rawPayload, null, 2), {
-					contentType: 'application/json',
-					upsert: true
-				});
+			let storageWarning = '';
 
-			if (uploadError) {
-				throw uploadError;
+			if (session.raw_data_path) {
+				const { error: storageError } = await supabase.storage
+					.from('diagnostic-raw')
+					.remove([session.raw_data_path]);
+
+				if (storageError) {
+					storageWarning = describeError(storageError, 'Raw session file could not be deleted.');
+				}
 			}
 
-			const { data, error } = await supabase
+			const { data: deletedRows, error } = await supabase
 				.from('sensor_sessions')
-				.insert({
-					id: sessionId,
-					user_id: currentUser.id,
-					started_at: sessionStartedAt ?? endedAt,
-					ended_at: endedAt,
-					duration_seconds: durationSeconds,
-					avg_heart_rate: summaryPayload.averageHeartRate,
-					avg_rr_ms: summaryPayload.averageRrMs,
-					avg_hrv_ms: summaryPayload.averageHrvMs,
-					last_hrv_ms: summaryPayload.lastHrvMs,
-					max_heart_rate: summaryPayload.maxHeartRate,
-					sample_count: summaryPayload.sampleCount,
-					device_name: summaryPayload.deviceInfo?.name ?? null,
-					capture_type: summaryPayload.captureType,
-					raw_data_path: rawDataPath,
-					summary_payload: summaryPayload,
-					session_summary: {
-						startedAt: summaryPayload.startedAt,
-						endedAt: summaryPayload.endedAt,
-						durationSeconds: summaryPayload.durationSeconds,
-						sampleCount: summaryPayload.sampleCount,
-						averageHeartRate: summaryPayload.averageHeartRate,
-						averageRrMs: summaryPayload.averageRrMs,
-						averageHrvMs: summaryPayload.averageHrvMs,
-						lastHrvMs: summaryPayload.lastHrvMs,
-						maxHeartRate: summaryPayload.maxHeartRate,
-						segmentLengthSeconds: summaryPayload.segmentLengthSeconds
-					}
-				})
-				.select(
-					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_rr_ms, avg_hrv_ms, last_hrv_ms, max_heart_rate, sample_count, device_name, capture_type, raw_data_path, summary_payload'
-				)
-				.single();
+				.delete()
+				.select('id')
+				.eq('id', session.id)
+				.eq('user_id', currentUser.id);
 
 			if (error) {
 				throw error;
 			}
 
-			lastSavedDiagnosticSession = data as SavedDiagnosticSession;
-			diagnosticSessions = [
-				lastSavedDiagnosticSession,
-				...diagnosticSessions.filter((session) => session.id !== lastSavedDiagnosticSession?.id)
-			];
-			selectedDiagnosticSessionId = lastSavedDiagnosticSession.id;
-			sensorStatus = `Disconnected. Diagnostic session saved (${data.id.slice(0, 8)}...).`;
+			if (!deletedRows || deletedRows.length === 0) {
+				throw new Error('No matching session was deleted. Check row-level permissions for sensor_sessions.');
+			}
+
+			await loadDiagnosticSessions(currentUser.id);
+			if (lastSavedDiagnosticSession?.id === session.id) {
+				lastSavedDiagnosticSession = null;
+			}
+			diagnosticStatus = storageWarning
+				? `Saved session deleted. ${storageWarning}`
+				: 'Saved session deleted.';
 		} catch (error) {
-			sensorStatus = describeError(error, 'Disconnected, but failed to save diagnostics.');
-		} finally {
-			sessionStartedAt = null;
-			sessionSamples = [];
+			diagnosticStatus = describeError(error, 'Failed to delete saved session.');
 		}
 	}
 
@@ -545,8 +394,13 @@
 				}
 			].slice(-600);
 		}
+	function acknowledgeAlert() {
+		showEntryAlert = false;
+	}
 
-		sensorStatus = 'Simulated stress signal loaded';
+	function takeBreak() {
+		sensorStatus = 'Break mode suggested. Step away, hydrate, and take a short reset.';
+		showEntryAlert = false;
 	}
 </script>
 
@@ -582,19 +436,6 @@
 {:else}
 	<SiteNav />
 	<main class="page-shell">
-		<section class="hero">
-			<div>
-				<p class="eyebrow">Live Data</p>
-				<h1>Sensor stream for {displayName}</h1>
-				<p class="hero-copy">Live sensor controls and saved sessions live together here, without squeezing the diagnostics view into a side strip.</p>
-			</div>
-			<div class="hero-card">
-				<p class="hero-card-label">Monitor State</p>
-				<p class="hero-card-value">{isSensorConnected ? 'LIVE' : 'IDLE'}</p>
-				<p class="hero-card-copy">{sensorStatus}</p>
-			</div>
-		</section>
-
 		<AppSectionNav />
 
 		<section class="grid">
@@ -631,6 +472,17 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
+						<span>
+							{sessionStartedAt
+								? isSavingSession
+									? 'Ending Session...'
+									: 'End Session'
+								: 'Start Session'}
+						</span>
+					</button>
+
 					<div class="inline-buttons">
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
@@ -640,6 +492,19 @@
 				</div>
 
 				<p class="section-copy">{sensorStatus}</p>
+
+				<div class="saved-panel">
+					<div class:active={Boolean(sessionStartedAt)} class="recording-banner">
+						<span class:dot-live={Boolean(sessionStartedAt)} class="recording-dot"></span>
+						<span>{sessionStartedAt ? 'Recording in progress' : 'No active recording'}</span>
+					</div>
+					<p class="saved-title">Session status</p>
+					<div class="saved-metrics">
+						<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
+						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
+						<span>{sessionSamples.length} captured samples</span>
+					</div>
+				</div>
 
 				{#if lastSavedDiagnosticSession}
 					<div class="saved-panel">
@@ -676,18 +541,19 @@
 				<div class="data-layout">
 					{#if diagnosticSessions.length > 0}
 						<div class="session-list" role="list">
-							{#each diagnosticSessions as session}
-								<button
-									class:selected={session.id === selectedDiagnosticSessionId}
-									class="session-item"
-									type="button"
-									onclick={() => (selectedDiagnosticSessionId = session.id)}
-								>
-									<span class="session-item-date">{formatSessionDate(session.started_at)}</span>
-									<span class="session-item-meta">
-										{formatMetric(session.avg_heart_rate)} bpm · {formatMetric(session.avg_hrv_ms, 1)} ms HRV
-									</span>
-								</button>
+							{#each diagnosticSessions as session, index}
+								<article class:selected={session.id === selectedDiagnosticSessionId} class="session-item">
+									<button class="session-select" type="button" onclick={() => (selectedDiagnosticSessionId = session.id)}>
+										<span class="session-index">S{index + 1}</span>
+										<span class="session-item-date">{formatSessionDate(session.started_at)}</span>
+										<span class="session-item-meta">
+											{formatMetric(session.avg_heart_rate)} bpm · {formatMetric(session.avg_hrv_ms, 1)} ms HRV
+										</span>
+									</button>
+									<button class="session-delete" type="button" onclick={() => deleteDiagnosticSession(session)}>
+										Delete
+									</button>
+								</article>
 							{/each}
 						</div>
 					{:else}
@@ -771,6 +637,28 @@
 			</article>
 		</section>
 	</main>
+
+	{#if showEntryAlert}
+		<div class="alert-overlay">
+			<div class="alert-modal">
+				<div class="alert-icon-wrap">
+					<span class="material-symbols-outlined alert-icon">error</span>
+				</div>
+				<h2>Critical Insight</h2>
+				<p>
+					Your heart rate indicates you have reached <strong>cognitive decline</strong>. It&apos;s
+					time to pause and reset.
+				</p>
+				<div class="alert-actions">
+					<button class="button alert-primary" onclick={takeBreak}>Take a break</button>
+					<button class="button button-subtle alert-secondary" onclick={acknowledgeAlert}>
+						Acknowledge
+					</button>
+				</div>
+				<p class="alert-footnote">Safety protocols active</p>
+			</div>
+		</div>
+	{/if}
 {/if}
 
 <style>
@@ -834,19 +722,24 @@
 
 	.page-shell,
 	.auth-shell {
-		max-width: 84rem;
-		margin: 0 auto;
-		padding: 1rem 1.5rem 3rem;
+		padding: 1.2rem 1.5rem 3rem;
 	}
 
 	.auth-shell {
+		max-width: 84rem;
+		margin: 0 auto;
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
 	}
 
+	.page-shell > :global(.section-nav),
+	.page-shell > .grid {
+		width: min(100%, 84rem);
+		margin-inline: auto;
+	}
+
 	.auth-panel,
-	.hero-card,
 	.sensor-card,
 	.data-card {
 		background: var(--panel-bg);
@@ -861,17 +754,9 @@
 		padding: 2rem;
 	}
 
-	.hero {
-		display: grid;
-		grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.8fr);
-		gap: 1.2rem;
-		padding-top: 0.5rem;
-	}
-
 	.eyebrow,
 	.metric-label,
-	.saved-title,
-	.hero-card-label {
+	.saved-title {
 		margin: 0 0 0.45rem;
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -907,28 +792,9 @@
 		line-height: 1.65;
 	}
 
-	.hero-card,
 	.sensor-card,
 	.data-card {
 		padding: 1.45rem;
-	}
-
-	.hero-card {
-		display: grid;
-		align-content: center;
-		gap: 0.55rem;
-	}
-
-	.hero-card-value {
-		margin: 0;
-		font-size: clamp(2.2rem, 5vw, 3.8rem);
-		font-weight: 800;
-		letter-spacing: -0.05em;
-	}
-
-	.hero-card-copy {
-		margin: 0;
-		line-height: 1.6;
 	}
 
 	.grid {
@@ -973,6 +839,32 @@
 	.live-dot.dot-live {
 		background: #10b981;
 		box-shadow: 0 0 0 0.22rem rgba(16, 185, 129, 0.2);
+	}
+
+	.recording-banner {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.55rem 0.8rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.16);
+		color: var(--on-surface-variant);
+		font-size: 0.8rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.recording-banner.active {
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error);
+	}
+
+	.recording-dot {
+		width: 0.62rem;
+		height: 0.62rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.5);
 	}
 
 	.metric-grid {
@@ -1033,13 +925,40 @@
 		cursor: pointer;
 		font: inherit;
 		font-weight: 800;
-		background: var(--primary);
+		background: linear-gradient(135deg, var(--primary), #128d7f);
 		color: var(--on-primary);
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+		transition:
+			transform 160ms ease,
+			box-shadow 160ms ease,
+			background 160ms ease,
+			color 160ms ease;
 	}
 
 	.button-subtle {
 		background: var(--secondary-container);
 		color: var(--on-surface);
+		box-shadow: none;
+	}
+
+	.button:hover {
+		transform: translateY(-1px);
+	}
+
+	.button:active {
+		transform: translateY(2px);
+		box-shadow: none;
+	}
+
+	.button:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+		transform: none;
+		box-shadow: none;
+	}
+
+	.session-button {
+		width: 100%;
 	}
 
 	.saved-panel,
@@ -1075,20 +994,47 @@
 
 	.session-item {
 		display: grid;
-		gap: 0.25rem;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 0.75rem;
 		width: 100%;
-		padding: 0.95rem 1rem;
-		text-align: left;
+		padding: 0.75rem;
 		border: 1px solid transparent;
 		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 76%, white);
-		cursor: pointer;
-		font: inherit;
-		color: inherit;
 	}
 
 	.session-item.selected {
 		border-color: color-mix(in srgb, var(--primary, #00675c) 56%, transparent);
 		background: color-mix(in srgb, var(--primary, #00675c) 14%, white);
+	}
+
+	.session-select {
+		display: grid;
+		gap: 0.25rem;
+		width: 100%;
+		padding: 0.2rem 0.25rem;
+		text-align: left;
+		border: 0;
+		background: transparent;
+		cursor: pointer;
+		font: inherit;
+		color: inherit;
+	}
+
+	.session-index {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin: 0 0 0.45rem;
+		padding: 0.32rem 0.58rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--primary, #00675c) 12%, white);
+		color: var(--primary, #00675c);
+		font-size: 0.78rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		width: fit-content;
 	}
 
 	.session-item-date {
@@ -1098,6 +1044,17 @@
 	.session-item-meta {
 		font-size: 0.92rem;
 		color: var(--on-surface-variant);
+	}
+
+	.session-delete {
+		border: 0;
+		border-radius: 999px;
+		padding: 0.55rem 0.8rem;
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error, #b31b25);
+		font: inherit;
+		font-weight: 800;
+		cursor: pointer;
 	}
 
 	.segment-grid {
@@ -1142,8 +1099,91 @@
 		line-height: 1.6;
 	}
 
+	.alert-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 100;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 1.5rem;
+		background: rgba(1, 15, 32, 0.34);
+		backdrop-filter: blur(14px);
+	}
+
+	.alert-modal {
+		width: min(100%, 22rem);
+		padding: 2rem 1.6rem 1.5rem;
+		border-radius: 2rem;
+		background: rgba(255, 255, 255, 0.96);
+		border: 1px solid rgba(179, 27, 37, 0.08);
+		box-shadow: 0 28px 60px rgba(31, 47, 82, 0.22);
+		text-align: center;
+	}
+
+	.alert-icon-wrap {
+		width: 4.6rem;
+		height: 4.6rem;
+		margin: 0 auto 1.1rem;
+		display: grid;
+		place-items: center;
+		border-radius: 999px;
+		background: rgba(251, 81, 81, 0.18);
+	}
+
+	.alert-icon {
+		font-size: 2.8rem;
+		color: var(--error, #b31b25);
+		font-variation-settings:
+			'FILL' 1,
+			'wght' 500,
+			'GRAD' 0,
+			'opsz' 24;
+	}
+
+	.alert-modal h2 {
+		margin: 0;
+		font-size: 1.55rem;
+		line-height: 1;
+		letter-spacing: -0.04em;
+		color: var(--on-surface);
+	}
+
+	.alert-modal p {
+		margin: 0.9rem 0 0;
+		line-height: 1.65;
+		color: var(--on-surface-variant);
+	}
+
+	.alert-modal strong {
+		color: var(--error, #b31b25);
+	}
+
+	.alert-actions {
+		display: grid;
+		gap: 0.8rem;
+		margin-top: 1.35rem;
+	}
+
+	.alert-primary,
+	.alert-secondary {
+		width: 100%;
+		border-radius: 999px;
+	}
+
+	.alert-secondary {
+		background: rgba(183, 211, 255, 0.72);
+	}
+
+	.alert-footnote {
+		font-size: 0.72rem;
+		font-weight: 800;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--outline, #6a788d);
+	}
+
 	@media (max-width: 1180px) {
-		.hero,
 		.grid {
 			grid-template-columns: 1fr;
 		}
@@ -1163,7 +1203,6 @@
 		}
 
 		.auth-panel,
-		.hero-card,
 		.sensor-card,
 		.data-card {
 			padding: 1.2rem;

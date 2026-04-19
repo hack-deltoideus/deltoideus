@@ -66,10 +66,10 @@
 	}
 
 	.section-link.active {
-		background: var(--primary, #00675c);
+		background: linear-gradient(135deg, var(--primary, #00675c), #128d7f);
 		color: var(--on-primary, #c1fff2);
 		border-color: transparent;
-		box-shadow: 0 12px 28px rgba(10, 118, 106, 0.22);
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
 	}
 
 	@media (max-width: 640px) {

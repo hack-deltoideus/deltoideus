@@ -6,14 +6,15 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
+		"start": "node build/index.js",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
 	},
 	"devDependencies": {
-		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/kit": "^2.57.0",
+		"@sveltejs/adapter-node": "^5.3.4",
 		"@sveltejs/vite-plugin-svelte": "^7.0.0",
 		"svelte": "^5.55.2",
 		"svelte-check": "^4.4.6",

@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { generateGeminiTextWithFallbacks } from '$lib/server/gemini';
+import { collectGeminiApiKeys, generateGeminiTextWithFallbacks } from '$lib/server/gemini';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type HelperRequestBody = {
@@ -72,6 +72,25 @@ function shouldUseFallback(result: { ok: false; status: number; message: string 
   );
 }
 
+function buildFallbackWarning(result: { status: number; message: string; model: string }, label: string): string {
+  const normalized = result.message.toLowerCase();
+  const retryMatch = result.message.match(/retry in ([\d.]+)s/i);
+  const retrySeconds = retryMatch ? Math.max(1, Math.ceil(Number.parseFloat(retryMatch[1] ?? '0'))) : null;
+
+  if (
+    result.status === 429 ||
+    normalized.includes('quota exceeded') ||
+    normalized.includes('resource exhausted') ||
+    normalized.includes('rate limit')
+  ) {
+    return retrySeconds
+      ? `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
+      : `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+  }
+
+  return `Gemini is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+}
+
 function fallbackHelperReply(body: HelperRequestBody, question: string): string {
   const persona = body.persona ?? 'calm-coach';
   const normalizedQuestion = question.toLowerCase();
@@ -139,10 +158,19 @@ function fallbackHelperReply(body: HelperRequestBody, question: string): string 
 }
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
-  const apiKey = env.GEMINI_KEY || env.GEMINI_API_KEY || env.GOOGLE_API_KEY;
-  if (!apiKey) {
+  const apiKeys = collectGeminiApiKeys([
+    env.GEMINI_KEY,
+    env.GEMINI_FALLBACK_KEY,
+    env.GEMINI_KEYS,
+    env.GEMINI_API_KEY,
+    env.GOOGLE_API_KEY
+  ]);
+  if (apiKeys.length === 0) {
     return json(
-      { error: 'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY.' },
+      {
+        error:
+          'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_FALLBACK_KEY, GEMINI_KEYS, GEMINI_API_KEY, or GOOGLE_API_KEY.'
+      },
       { status: 500 }
     );
   }
@@ -167,12 +195,12 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   const recentHistory = (body.history ?? [])
     .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant') && entry.text?.trim())
     .slice(-6)
-    .map((entry) => `- ${entry.role === 'user' ? 'Student' : 'Kelp'}: ${entry.text.trim()}`)
+    .map((entry) => `- ${entry.role === 'user' ? 'Student' : 'Oy'}: ${entry.text.trim()}`)
     .join('\n');
 
   const questionSpecificGuidance =
     questionType === 'identity'
-      ? 'Reply in exactly 2 sentences. Start with "I\'m Kelp." Then briefly say how you can help with stress, focus, or planning.'
+      ? 'Reply in exactly 2 sentences. Start with "I\'m Oy." Then briefly say how you can help with stress, focus, or planning.'
       : questionType === 'greeting'
         ? 'Reply in 1 short paragraph. Greet the student briefly, then offer one concrete kind of help.'
         : questionType === 'planning'
@@ -182,8 +210,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
             : 'Answer directly and keep the reply specific to the student message.';
 
   const systemInstruction = [
-    'You are Kelp, the AI coach inside Sanctuary.',
-    'Your name is Kelp. Never claim to be any other person or assistant.',
+    'You are Oy, the AI coach inside Sanctuary.',
+    'Your name is Oy. Never claim to be any other person or assistant.',
     'You are having an ongoing chat with one student, not writing marketing copy.',
     '',
     'Core behavior:',
@@ -200,14 +228,14 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     '',
     'Question handling rules:',
     '- If the student asks your name or who you are, answer directly in 1-2 sentences.',
-    '- If asked your name, say "I\'m Kelp" and briefly describe how you can help.',
+    '- If asked your name, say "I\'m Oy" and briefly describe how you can help.',
     '- If the student greets you, greet them back briefly and offer one concrete way you can help.',
     '- If the student asks for a plan, give short, actionable steps.',
     '- If the student sounds highly distressed or unsafe, encourage reaching out to a trusted person or campus support.',
     '- Include "Next step:" only when it adds value. Do not force it into every response.',
     '',
     'Bad pattern to avoid:',
-    '- Repeating a canned intro like "Hi there! I\'m Kelp..." on multiple turns.',
+    '- Repeating a canned intro like "Hi there! I\'m Oy..." on multiple turns.',
     '- Repeating the same closing line across replies.'
   ].join('\n');
 
@@ -232,7 +260,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   ].join('\n');
 
   const result = await generateGeminiTextWithFallbacks({
-    apiKey,
+    apiKeys,
     fetch,
     prompt,
     systemInstruction,
@@ -244,7 +272,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   if (!result.ok && shouldUseFallback(result)) {
     return json({
       reply: fallbackHelperReply(body, question),
-      warning: `Gemini is temporarily unavailable. Showing local fallback coach response instead. (${result.model})`,
+      warning: buildFallbackWarning(result, 'coach response'),
       source: 'fallback'
     });
   }

@@ -3,7 +3,14 @@
 	import { onMount } from 'svelte';
 	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
-	import { connectHeartRateMonitor } from '$lib/polar';
+	import {
+		connectSharedSensor,
+		disconnectSharedSensor,
+		endSharedSession,
+		sensorSession,
+		simulateSharedSpike,
+		startSharedSession
+	} from '$lib/sensor-session';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -28,7 +35,7 @@
 		code?: string;
 	};
 
-	type OAuthProvider = 'google' | 'github';
+	type OAuthProvider = 'google';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -61,46 +68,46 @@
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let isGeneratingPlan = $state(false);
-	let geminiPlan = $state('');
-	let geminiStatus = $state('');
-	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
 	let helperSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
 	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+	let helperThread = $state<HTMLElement | null>(null);
 
 	let isConnecting = $state(false);
+	let isSavingSession = $state(false);
 	let isSensorConnected = $state(false);
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
-
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	let sessionStartedAt = $state<string | null>(null);
+	let sessionSamples = $state<Array<{ elapsed_ms: number }>>([]);
 
 	const levelClass = $derived(`level-${stressLevel}`);
 	const levelLabel = $derived(
 		stressLevel === 'low' ? 'Low' : stressLevel === 'rising' ? 'Rising' : 'High'
 	);
-	const levelDescriptor = $derived(
-		stressLevel === 'low'
-			? 'Steady state'
-			: stressLevel === 'rising'
-				? 'Pressure building'
-				: 'Action recommended'
-	);
-	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 
-	if (browser) {
-		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
-	}
-
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			heartRate = state.heartRate;
+			rrMs = state.rrMs;
+			isConnecting = state.isConnecting;
+			isSavingSession = state.isSavingSession;
+			isSensorConnected = state.isSensorConnected;
+			canUseBluetooth = state.canUseBluetooth;
+			sensorStatus = state.sensorStatus;
+			sessionStartedAt = state.sessionStartedAt;
+			sessionSamples = state.sessionSamples;
+		});
+
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -122,6 +129,7 @@
 
 		return () => {
 			subscription.unsubscribe();
+			unsubscribeSensor();
 		};
 	});
 
@@ -201,46 +209,37 @@
 	}
 
 	async function connectSensor() {
-		if (!canUseBluetooth || isConnecting) {
-			return;
-		}
-
-		isConnecting = true;
-		sensorStatus = 'Connecting...';
-
-		try {
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-			});
-
-			isSensorConnected = true;
-			sensorStatus = 'Connected to heart rate monitor';
-		} catch (error) {
-			sensorStatus = describeError(error, 'Could not connect to sensor');
-		} finally {
-			isConnecting = false;
-		}
+		await connectSharedSensor();
 	}
 
 	async function disconnectSensor() {
-		if (!stopSensor) {
-			return;
-		}
-
-		await stopSensor();
-		stopSensor = null;
-		isSensorConnected = false;
-		sensorStatus = 'Disconnected';
+		await disconnectSharedSensor();
 	}
 
 	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
+		simulateSharedSpike();
+	}
 
-		heartRate = randomHr;
-		rrMs = randomRr;
-		sensorStatus = 'Simulated stress signal loaded';
+	function startSession() {
+		startSharedSession(Boolean(currentUser));
+	}
+
+	async function endSession() {
+		await endSharedSession(currentUser?.id ?? null);
+	}
+
+	function formatFullTimestamp(dateString: string | null): string {
+		if (!dateString) {
+			return '--';
+		}
+
+		return new Date(dateString).toLocaleString([], {
+			month: 'short',
+			day: 'numeric',
+			year: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
 	}
 
 	async function submitCheckIn() {
@@ -309,55 +308,13 @@
 		}
 	}
 
-	async function generateGeminiPlan() {
-		isGeneratingPlan = true;
-		geminiStatus = '';
-		geminiSource = '';
-
-		try {
-			const response = await fetch('/api/gemini-intervention', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressScore,
-					stressor
-				})
-			});
-
-			const payload = await response.json();
-			if (!response.ok) {
-				throw new Error(payload?.error ?? 'Failed to generate AI plan');
-			}
-
-			geminiPlan = payload.plan ?? '';
-			if (!geminiPlan) {
-				throw new Error('Gemini returned an empty plan.');
-			}
-
-			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			geminiStatus = payload?.warning ?? 'AI intervention generated.';
-		} catch (error) {
-			geminiStatus = describeError(error, 'Failed to generate plan.');
-		} finally {
-			isGeneratingPlan = false;
-		}
-	}
-
 	async function askGeminiHelper() {
 		helperStatus = '';
 		helperSource = '';
 
 		const question = helperQuestion.trim();
 		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
+			helperStatus = 'Add a question for Oy first.';
 			return;
 		}
 
@@ -377,14 +334,7 @@
 				body: JSON.stringify({
 					question,
 					persona: helperPersona,
-					history: helperHistory,
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressor
+					history: helperHistory
 				})
 			});
 
@@ -395,18 +345,18 @@
 
 			const reply = payload.reply ?? '';
 			if (!reply) {
-				throw new Error('Kelp returned an empty response.');
+				throw new Error('Oy returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
 				...nextHistory,
 				{ role: 'assistant', text: reply }
 			];
-			helperHistory = updatedHistory.slice(-8);
+			helperHistory = updatedHistory.slice(-12);
 			helperQuestion = '';
-
+			void scrollHelperToBottom();
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
+			helperStatus = payload?.warning ?? 'Oy replied.';
 		} catch (error) {
 			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
@@ -416,6 +366,27 @@
 
 	function applyQuickPrompt(prompt: string) {
 		helperQuestion = prompt;
+	}
+
+	async function scrollHelperToBottom() {
+		if (!browser || !helperThread) {
+			return;
+		}
+
+		await Promise.resolve();
+		helperThread.scrollTo({
+			top: helperThread.scrollHeight,
+			behavior: 'smooth'
+		});
+	}
+
+	function handleHelperComposerKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter' || event.shiftKey) {
+			return;
+		}
+
+		event.preventDefault();
+		void askGeminiHelper();
 	}
 </script>
 
@@ -436,9 +407,6 @@
 				<div class="auth-actions">
 					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
 						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
-					</button>
-					<button class="button button-subtle" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
-						{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
 					</button>
 				</div>
 
@@ -466,7 +434,7 @@
 				<div class="avatar">{avatarLetter}</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{displayName} · {currentUser.email ?? 'Ready for your check-in?'}</p>
+					<p class="profile-copy">{displayName}</p>
 				</div>
 			</div>
 		</div>
@@ -476,17 +444,21 @@
 				<span class="material-symbols-outlined">dashboard</span>
 				<span>Dashboard</span>
 			</a>
-			<a class="nav-item" href="#checkin">
-				<span class="material-symbols-outlined">edit_note</span>
-				<span>Check-in</span>
+			<a class="nav-item" href="/app/sensor">
+				<span class="material-symbols-outlined">monitor_heart</span>
+				<span>Live Data</span>
 			</a>
-			<a class="nav-item" href="#kelp">
+			<a class="nav-item" href="/app/coach">
 				<span class="material-symbols-outlined">psychology</span>
 				<span>AI Coach</span>
 			</a>
 			<a class="nav-item" href="/app/history">
 				<span class="material-symbols-outlined">history</span>
 				<span>History</span>
+			</a>
+			<a class="nav-item" href="/app/calendar">
+				<span class="material-symbols-outlined">calendar_month</span>
+				<span>Calendar</span>
 			</a>
 		</nav>
 
@@ -495,18 +467,8 @@
 	<div class="main-column">
 		<section class="hero" id="dashboard">
 			<div>
-				<h1>Welcome back, Alex</h1>
+				<h1>Welcome back, {displayName}</h1>
 				<!-- <p class="hero-copy">Today is a beautiful day to nurture your mind.</p> -->
-			</div>
-
-			<div class="hero-streak kit-panel">
-				<div class="hero-streak-icon">
-					<span class="material-symbols-outlined streak-icon">celebration</span>
-				</div>
-				<div>
-					<p class="hero-streak-label">Daily Streak</p>
-					<p class="hero-streak-value">{streakDays} DAYS</p>
-				</div>
 			</div>
 		</section>
 
@@ -514,7 +476,6 @@
 			<article class="stress-card kit-panel {levelClass}">
 				<div class="card-topline">
 					<p class="meta-label">Stress Detection</p>
-					<span class="material-symbols-outlined">waves</span>
 				</div>
 
 				<div class="score-row">
@@ -525,41 +486,12 @@
 				<div class="pill-row">
 					<p class="pill pill-primary">Level: {levelLabel}</p>
 				</div>
-
-				<div class="coach-box">
-					<p class="coach-title">Coach Suggestion</p>
-					<p class="coach-copy">{intervention}</p>
-					<p class="coach-caption">{levelDescriptor}</p>
-				</div>
-
-				<div class="status-group">
-					{#if geminiSource}
-						<p class="source-badge {geminiSource === 'fallback' ? 'fallback' : 'live'}">
-							{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-						</p>
-					{/if}
-
-					<button class="button button-ghost-on-dark" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
-						{isGeneratingPlan ? 'Generating AI Plan...' : 'Generate Gemini Plan'}
-					</button>
-				</div>
-
-				{#if geminiStatus}
-					<p class="inline-status on-dark">{geminiStatus}</p>
-				{/if}
-
-				{#if geminiPlan}
-					<pre class="output-panel">{geminiPlan}</pre>
-				{/if}
 			</article>
 
 			<article class="checkin-card kit-panel" id="checkin">
 				<div class="section-heading">
 					<div>
 						<h2>Daily Check-in</h2>
-					</div>
-					<div class="badge-icon accent-primary">
-						<span class="material-symbols-outlined filled-icon">favorite</span>
 					</div>
 				</div>
 
@@ -679,6 +611,17 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
+						<span>
+							{sessionStartedAt
+								? isSavingSession
+									? 'Ending Session...'
+									: 'End Session'
+								: 'Start Session'}
+						</span>
+					</button>
+
 					<div class="inline-buttons">
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
@@ -689,19 +632,32 @@
 
 				<p class="section-copy">{sensorStatus}</p>
 
+				<div class="saved-panel">
+					<div class:active={Boolean(sessionStartedAt)} class="recording-banner">
+						<span class:dot-live={Boolean(sessionStartedAt)} class="recording-dot"></span>
+						<span>{sessionStartedAt ? 'Recording in progress' : 'No active recording'}</span>
+					</div>
+					<p class="saved-title">Session status</p>
+					<div class="saved-metrics">
+						<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
+						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
+						<span>{sessionSamples.length} captured samples</span>
+					</div>
+				</div>
+
 				{#if !canUseBluetooth}
 					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
 				{/if}
 			</article>
 
-			<article class="helper-card kit-panel" id="kelp">
+			<article class="helper-card kit-panel" id="oy">
 				<div class="section-heading">
 					<div class="helper-heading">
 						<div class="badge-icon accent-tertiary">
 							<span class="material-symbols-outlined">smart_toy</span>
 						</div>
 						<div>
-							<h3>Ask Kelp</h3>
+							<h3>Ask Oy</h3>
 							<p class="helper-subtitle">Your AI Resilience Coach</p>
 						</div>
 					</div>
@@ -718,67 +674,69 @@
 
 				<RiveCharacter />
 
-				<div class="chat-shell">
+				<div class="chat-shell" bind:this={helperThread}>
 					{#if helperHistory.length > 0}
 						{#each helperHistory as msg}
 							<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
+								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
 								<p>{msg.text}</p>
 							</div>
 						{/each}
 					{:else}
 						<div class="chat-empty-state">
-							<p class="chat-empty-title">No messages yet.</p>
-							<p class="chat-empty-copy">Send a question when you want a quick plan, perspective, or reset.</p>
+							<p class="chat-empty-title">Start the conversation when you're ready.</p>
+							<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
+						</div>
+					{/if}
+
+					{#if isAskingHelper}
+						<div class="chat-bubble chat-bubble-status">
+							<p class="chat-author">Oy</p>
+							<p>Thinking through this...</p>
 						</div>
 					{/if}
 				</div>
 
-				<div class="prompt-row">
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Help me focus')}
-					>
-						&quot;Help me focus&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Log a victory')}
-					>
-						&quot;Log a victory&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Quick breathwork')}
-					>
-						&quot;Quick breathwork&quot;
-					</button>
+				<div class="helper-composer">
+					<div class="prompt-row" aria-label="Suggested prompts">
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
+							Help me focus
+						</button>
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
+							Log a victory
+						</button>
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
+							Quick breathwork
+						</button>
+					</div>
+
+					<div class="message-row">
+						<textarea
+							class="message-input"
+							bind:value={helperQuestion}
+							placeholder="Message Oy..."
+							maxlength="700"
+							rows="1"
+							onkeydown={handleHelperComposerKeydown}
+						></textarea>
+						<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
+							<span class="material-symbols-outlined">send</span>
+						</button>
+					</div>
+
+					<div class="helper-meta">
+						<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
+						{#if helperSource}
+							<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
+								{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+							</p>
+						{/if}
+					</div>
+
+					{#if helperStatus}
+						<p class="inline-status">{helperStatus}</p>
+					{/if}
 				</div>
-
-				<div class="message-row">
-					<input
-						class="message-input"
-						bind:value={helperQuestion}
-						placeholder="Type a message to Kelp..."
-						maxlength="700"
-					/>
-					<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-						<span class="material-symbols-outlined">send</span>
-					</button>
-				</div>
-
-				{#if helperSource}
-					<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-					</p>
-				{/if}
-
-				{#if helperStatus}
-					<p class="inline-status">{helperStatus}</p>
-				{/if}
 			</article>
 		</section>
 	</div>
@@ -788,17 +746,21 @@
 			<span class="material-symbols-outlined">dashboard</span>
 			<span>Dashboard</span>
 		</a>
-		<a class="footer-item" href="#checkin">
-			<span class="material-symbols-outlined">edit_note</span>
-			<span>Check-in</span>
-		</a>
-		<a class="footer-item" href="#kelp">
+		<a class="footer-item" href="#oy">
 			<span class="material-symbols-outlined">psychology</span>
 			<span>Coach</span>
+		</a>
+		<a class="footer-item" href="/app/sensor">
+			<span class="material-symbols-outlined">monitor_heart</span>
+			<span>Live Data</span>
 		</a>
 		<a class="footer-item" href="/app/history">
 			<span class="material-symbols-outlined">history</span>
 			<span>History</span>
+		</a>
+		<a class="footer-item" href="/app/calendar">
+			<span class="material-symbols-outlined">calendar_month</span>
+			<span>Calendar</span>
 		</a>
 	</footer>
 </main>
@@ -807,6 +769,11 @@
 <style>
 	:global(:root) {
 		--background: #f4f6ff;
+		--body-overlay-a: rgba(91, 244, 222, 0.36);
+		--body-overlay-b: rgba(183, 211, 255, 0.9);
+		--body-top: #f8fbff;
+		--body-bottom: #edf4ff;
+		--primary-glow: #6ef0e2;
 		--surface-container-lowest: #ffffff;
 		--secondary: #005da7;
 		--tertiary-container: #fcc025;
@@ -827,13 +794,32 @@
 		--on-secondary-container: #004884;
 		--secondary-container: #b7d3ff;
 		--outline-variant: #a0aec5;
+		--panel-bg: rgba(255, 255, 255, 0.76);
+		--panel-border: rgba(160, 174, 197, 0.3);
+		--hero-streak-bg: rgba(211, 228, 255, 0.72);
+		--nav-hover-bg: rgba(201, 222, 255, 0.7);
+		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		--sensor-bg: rgba(255, 255, 255, 0.92);
+		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		--card-surface: rgba(255, 255, 255, 0.8);
+		--field-bg: rgba(255, 255, 255, 0.88);
+		--saved-panel-bg: rgba(211, 228, 255, 0.58);
+		--chat-shell-bg: rgba(255, 255, 255, 0.55);
+		--chat-bubble-bg: #ffffff;
+		--prompt-chip-bg: #ffffff;
+		--icon-button-bg: #ffffff;
 		--shadow-soft: 0 20px 45px rgba(31, 47, 82, 0.12);
 	}
 
 	:global(:root[data-theme='dark']) {
 		--background: #091521;
+		--body-overlay-a: rgba(74, 211, 188, 0.12);
+		--body-overlay-b: rgba(74, 128, 120, 0.16);
+		--body-top: #0d1a27;
+		--body-bottom: #07111a;
+		--primary-glow: #59d9c2;
 		--surface-container-lowest: #0d1c2a;
-		--secondary: #8ac3ff;
+		--secondary: #7ebdb2;
 		--tertiary-container: #5e4600;
 		--surface-container-high: #173244;
 		--error: #ff8a95;
@@ -844,14 +830,28 @@
 		--surface-container: #122636;
 		--surface-container-low: #0f2231;
 		--on-surface-variant: #bacbdd;
-		--primary-dim: #49d7c9;
+		--primary-dim: #34b7a5;
 		--outline: #6f8396;
-		--primary: #67efe0;
+		--primary: #52d8c0;
 		--on-primary: #073a35;
 		--primary-container: #103f3a;
 		--on-secondary-container: #d9ebff;
 		--secondary-container: #1b455f;
 		--outline-variant: #465a6c;
+		--panel-bg: rgba(11, 24, 36, 0.82);
+		--panel-border: rgba(92, 111, 127, 0.32);
+		--hero-streak-bg: rgba(18, 38, 54, 0.9);
+		--nav-hover-bg: rgba(27, 69, 95, 0.44);
+		--checkin-bg: linear-gradient(180deg, rgba(12, 27, 40, 0.96), rgba(16, 34, 49, 0.98));
+		--sensor-bg: rgba(12, 27, 40, 0.95);
+		--helper-bg: linear-gradient(180deg, rgba(21, 42, 60, 0.96), rgba(14, 31, 45, 0.98));
+		--card-surface: rgba(15, 34, 49, 0.92);
+		--field-bg: rgba(16, 33, 46, 0.96);
+		--saved-panel-bg: rgba(18, 38, 54, 0.92);
+		--chat-shell-bg: rgba(10, 25, 37, 0.86);
+		--chat-bubble-bg: rgba(15, 34, 49, 0.96);
+		--prompt-chip-bg: rgba(15, 34, 49, 0.96);
+		--icon-button-bg: rgba(15, 34, 49, 0.96);
 		--shadow-soft: 0 22px 48px rgba(0, 0, 0, 0.42);
 	}
 
@@ -863,9 +863,9 @@
 		margin: 0;
 		font-family: 'Plus Jakarta Sans', sans-serif;
 		background:
-			radial-gradient(circle at top left, rgba(91, 244, 222, 0.36), transparent 32%),
-			radial-gradient(circle at top right, rgba(183, 211, 255, 0.9), transparent 30%),
-			linear-gradient(180deg, #f8fbff 0%, var(--background) 40%, #edf4ff 100%);
+			radial-gradient(circle at top left, var(--body-overlay-a), transparent 32%),
+			radial-gradient(circle at top right, var(--body-overlay-b), transparent 30%),
+			linear-gradient(180deg, var(--body-top) 0%, var(--background) 40%, var(--body-bottom) 100%);
 		color: var(--on-surface);
 	}
 
@@ -936,8 +936,8 @@
 	}
 
 	.kit-panel {
-		background: rgba(255, 255, 255, 0.76);
-		border: 1px solid rgba(160, 174, 197, 0.3);
+		background: var(--panel-bg);
+		border: 1px solid var(--panel-border);
 		border-radius: 2rem;
 		box-shadow: var(--shadow-soft);
 		backdrop-filter: blur(18px);
@@ -965,6 +965,14 @@
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
 		color: var(--primary);
+	}
+
+	.stress-card .meta-label {
+		color: rgba(232, 255, 250, 0.82);
+	}
+
+	:global(:root[data-theme='dark']) .stress-card .meta-label {
+		color: rgba(236, 245, 255, 0.78);
 	}
 
 	.brand-subtitle,
@@ -1005,6 +1013,9 @@
 	.avatar {
 		width: 3rem;
 		height: 3rem;
+		min-width: 3rem;
+		min-height: 3rem;
+		flex: 0 0 3rem;
 		border-radius: 999px;
 		background: linear-gradient(135deg, var(--primary), var(--primary-container));
 		color: white;
@@ -1050,7 +1061,7 @@
 	.nav-item:hover,
 	.footer-item:hover {
 		transform: translateY(-1px);
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 	}
 
@@ -1101,7 +1112,7 @@
 		gap: 1rem;
 		min-width: 15rem;
 		padding: 1rem 1.2rem;
-		background: rgba(211, 228, 255, 0.72);
+		background: var(--hero-streak-bg);
 	}
 
 	.hero-streak-icon,
@@ -1157,17 +1168,17 @@
 
 	.checkin-card {
 		grid-column: span 8;
-		background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
+		background: var(--checkin-bg);
 	}
 
 	.sensor-card {
 		grid-column: span 5;
-		background: rgba(255, 255, 255, 0.92);
+		background: var(--sensor-bg);
 	}
 
 	.helper-card {
 		grid-column: span 7;
-		background: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
+		background: var(--helper-bg);
 	}
 
 	.card-topline,
@@ -1299,7 +1310,7 @@
 		padding: 1.1rem;
 		border-radius: 1.5rem;
 		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: rgba(255, 255, 255, 0.8);
+		background: var(--card-surface);
 	}
 
 	.slider-title {
@@ -1342,7 +1353,7 @@
 		padding: 0.95rem 1rem;
 		font: inherit;
 		color: var(--on-surface);
-		background: rgba(255, 255, 255, 0.88);
+		background: var(--field-bg);
 	}
 
 	input[type='range'] {
@@ -1420,9 +1431,13 @@
 	}
 
 	.button-subtle {
-		background: rgba(201, 222, 255, 0.7);
+		background: var(--nav-hover-bg);
 		color: var(--on-surface);
 		box-shadow: none;
+	}
+
+	.session-button {
+		width: 100%;
 	}
 
 	.button-ghost-on-dark {
@@ -1436,7 +1451,7 @@
 		margin-top: 1rem;
 		padding: 1rem;
 		border-radius: 1.4rem;
-		background: rgba(211, 228, 255, 0.58);
+		background: var(--saved-panel-bg);
 		border: 1px solid rgba(160, 174, 197, 0.24);
 	}
 
@@ -1450,7 +1465,7 @@
 	.saved-metrics span {
 		padding: 0.45rem 0.75rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--card-surface);
 		font-size: 0.8rem;
 		font-weight: 800;
 		color: var(--primary);
@@ -1518,13 +1533,39 @@
 		animation: pulse 1.4s infinite;
 	}
 
+	.recording-banner {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.55rem 0.8rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.16);
+		color: var(--on-surface-variant);
+		font-size: 0.8rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.recording-banner.active {
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error);
+	}
+
+	.recording-dot {
+		width: 0.62rem;
+		height: 0.62rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.5);
+	}
+
 	.chat-shell {
 		display: grid;
 		gap: 0.8rem;
 		padding: 1rem;
 		margin-top: 1rem;
 		border-radius: 1.6rem;
-		background: rgba(255, 255, 255, 0.55);
+		background: var(--chat-shell-bg);
 		min-height: 14rem;
 	}
 
@@ -1532,7 +1573,7 @@
 		max-width: 85%;
 		padding: 0.95rem 1rem;
 		border-radius: 1.2rem 1.2rem 1.2rem 0.4rem;
-		background: white;
+		background: var(--chat-bubble-bg);
 		box-shadow: 0 8px 18px rgba(31, 47, 82, 0.08);
 	}
 
@@ -1585,15 +1626,22 @@
 
 	.prompt-row {
 		display: flex;
-		flex-wrap: wrap;
 		gap: 0.65rem;
+		overflow-x: auto;
+		padding-bottom: 0.15rem;
 		margin-top: 1rem;
+		scrollbar-width: none;
+	}
+
+	.prompt-row::-webkit-scrollbar {
+		display: none;
 	}
 
 	.prompt-chip {
+		flex: 0 0 auto;
 		padding: 0.7rem 0.95rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--prompt-chip-bg);
 		color: var(--primary);
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -1603,25 +1651,32 @@
 	.message-row {
 		position: relative;
 		margin-top: 1rem;
+		display: flex;
+		align-items: center;
+		overflow: hidden;
+		border-radius: 1.35rem;
 	}
 
 	.message-input {
-		padding-right: 4.2rem;
-		border-radius: 1.3rem;
+		min-height: 2.85rem;
+		padding: 0.55rem 6.35rem 0.55rem 1rem;
+		border-radius: 1.35rem;
+		line-height: 1.55;
+		resize: none;
 	}
 
 	.send-button {
 		position: absolute;
-		top: 0.55rem;
-		right: 0.55rem;
+		top: 0.45rem;
+		right: 0.45rem;
+		bottom: 0.45rem;
 		display: grid;
 		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		border-radius: 0.95rem;
+		width: 4.15rem;
+		border-radius: 1rem;
 		background: var(--primary);
 		color: white;
-		box-shadow: 0 2px 0 rgba(0, 77, 69, 0.25);
+		box-shadow: 0 10px 18px rgba(10, 118, 106, 0.22);
 	}
 
 	.source-badge {
@@ -1682,8 +1737,53 @@
 		width: 2.9rem;
 		height: 2.9rem;
 		border-radius: 999px;
-		background: white;
+		background: var(--icon-button-bg);
 		color: var(--primary);
+	}
+
+	:global(:root[data-theme='dark']) .site-nav-shell {
+		background: linear-gradient(180deg, rgba(7, 17, 26, 0.92), rgba(7, 17, 26, 0));
+	}
+
+	:global(:root[data-theme='dark']) .nav-item,
+	:global(:root[data-theme='dark']) .footer-item {
+		color: #d6e6f5;
+	}
+
+	:global(:root[data-theme='dark']) .nav-item.is-active,
+	:global(:root[data-theme='dark']) .footer-item.is-active {
+		box-shadow: 0 6px 0 rgba(11, 51, 46, 0.5);
+	}
+
+	:global(:root[data-theme='dark']) .stress-card {
+		border-color: rgba(103, 239, 224, 0.28);
+		box-shadow: 0 16px 34px rgba(2, 14, 20, 0.44);
+	}
+
+	:global(:root[data-theme='dark']) .slider-card,
+	:global(:root[data-theme='dark']) .metric-card,
+	:global(:root[data-theme='dark']) .saved-metrics span,
+	:global(:root[data-theme='dark']) .prompt-chip,
+	:global(:root[data-theme='dark']) .chat-bubble,
+	:global(:root[data-theme='dark']) .icon-button {
+		border-color: rgba(70, 90, 108, 0.38);
+		box-shadow: none;
+	}
+
+	:global(:root[data-theme='dark']) .slider-scale,
+	:global(:root[data-theme='dark']) .chat-author,
+	:global(:root[data-theme='dark']) .profile-copy,
+	:global(:root[data-theme='dark']) .hero-streak-label {
+		color: #bacbdd;
+	}
+
+	:global(:root[data-theme='dark']) .button-ghost-on-dark {
+		background: rgba(255, 255, 255, 0.08);
+		color: #edf5ff;
+	}
+
+	:global(:root[data-theme='dark']) .chat-empty-state {
+		border-color: rgba(70, 90, 108, 0.5);
 	}
 
 	.sr-only {
