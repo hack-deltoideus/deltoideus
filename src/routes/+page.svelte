@@ -1,5 +1,5 @@
 <svelte:head>
-	<title>Stude Buddy | Your Space for Peace</title>
+	<title>Study Buddy | Your Space for Peace</title>
 </svelte:head>
 
 <script lang="ts">
