@@ -3,7 +3,37 @@
 </svelte:head>
 
 <script lang="ts">
+	import { browser } from '$app/environment';
+	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
+	import { supabase } from '$lib/supabase';
+	import { onMount } from 'svelte';
+	import type { Session, User } from '@supabase/supabase-js';
+
+	let currentSession = $state<Session | null>(null);
+	let currentUser = $state<User | null>(null);
+
+	onMount(() => {
+		if (!browser || !supabase) {
+			return;
+		}
+
+		void supabase.auth.getSession().then(({ data }) => {
+			currentSession = data.session;
+			currentUser = data.session?.user ?? null;
+		});
+
+		const {
+			data: { subscription }
+		} = supabase.auth.onAuthStateChange((_event, session) => {
+			currentSession = session;
+			currentUser = session?.user ?? null;
+		});
+
+		return () => {
+			subscription.unsubscribe();
+		};
+	});
 </script>
 
 <main class="landing-shell">
@@ -22,36 +52,33 @@
 			</p>
 		</div>
 
-		<div class="hero-stage" aria-label="Mascot preview on landing page">
-			<div class="hero-orb orb-left"></div>
-			<div class="hero-orb orb-right"></div>
-			<div class="play-center">
-				<p>INSERT MASCOT HERE</p>
+		<div class="hero-mascot-row">
+			<div class="hero-mascot-copy">
+				<p class="hero-mascot-kicker">Meet Oy</p>
+				<p class="hero-mascot-text">Oy is the companion and mascot of Study Buddy. He is your study buddy.</p>
+				<p class="hero-mascot-prompt">Click Oy to say hi!</p>
 			</div>
-			<div class="stage-frame"></div>
+
+			<div class="hero-stage" aria-label="Mascot preview on landing page">
+				<div class="hero-orb orb-left"></div>
+				<div class="hero-orb orb-right"></div>
+				<RiveCharacter variant="hero" />
+				<div class="stage-frame"></div>
+			</div>
 		</div>
 
-		<div class="hero-actions">
-			<a class="primary-action" href="/app">
-				<span>Login</span>
-				<span class="material-symbols-outlined">arrow_forward</span>
-			</a>
-			<p>
-				New here?
-				<a href="#pricing">Make an account</a>
-			</p>
-		</div>
-	</section>
-
-	<section class="final-cta" id="pricing">
-		<div class="dot-grid"></div>
-		<div class="cta-content">
-			<h2>Start your journey today.</h2>
-			<p>
-				Join thousands of others finding their daily balance using Study Buddy.
-			</p>
-			<a class="secondary-action" href="/app">Get Started</a>
-		</div>
+		{#if !currentSession || !currentUser}
+			<div class="hero-actions">
+				<a class="primary-action" href="/app">
+					<span>Login</span>
+					<span class="material-symbols-outlined">arrow_forward</span>
+				</a>
+				<p>
+					New here?
+					<a href="#pricing">Make an account</a>
+				</p>
+			</div>
+		{/if}
 	</section>
 </main>
 
@@ -230,8 +257,7 @@
 		color: var(--primary);
 	}
 
-	.primary-action,
-	.secondary-action {
+	.primary-action {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -244,8 +270,7 @@
 			filter 160ms ease;
 	}
 
-	.primary-action:hover,
-	.secondary-action:hover {
+	.primary-action:hover {
 		transform: translateY(-1px) scale(1.01);
 		filter: brightness(1.03);
 	}
@@ -277,11 +302,53 @@
 		color: var(--on-surface-variant);
 	}
 
+	.hero-mascot-copy {
+		max-width: 22rem;
+		text-align: left;
+	}
+
+	.hero-mascot-row {
+		display: grid;
+		grid-template-columns: minmax(0, 0.42fr) minmax(0, 0.58fr);
+		align-items: center;
+		gap: 2rem;
+		max-width: 72rem;
+		margin: 3.4rem auto 0;
+	}
+
+	.hero-mascot-kicker,
+	.hero-mascot-text,
+	.hero-mascot-prompt {
+		margin: 0;
+	}
+
+	.hero-mascot-kicker {
+		font-size: 0.82rem;
+		font-weight: 800;
+		letter-spacing: 0.14em;
+		text-transform: uppercase;
+		color: var(--primary);
+	}
+
+	.hero-mascot-text {
+		margin-top: 0.6rem;
+		font-size: 1.02rem;
+		line-height: 1.65;
+		color: var(--on-surface-variant);
+	}
+
+	.hero-mascot-prompt {
+		margin-top: 0.8rem;
+		font-size: 0.95rem;
+		font-weight: 700;
+		color: var(--primary);
+	}
+
 	.hero-stage {
 		position: relative;
 		overflow: hidden;
-		max-width: 64rem;
-		margin: 3rem auto 0;
+		width: 100%;
+		margin: 0;
 		aspect-ratio: 16 / 9;
 		border-radius: 1.6rem;
 		background:
@@ -311,24 +378,6 @@
 		width: 12rem;
 		height: 12rem;
 		background: rgba(252, 192, 37, 0.22);
-	}
-
-	.play-center {
-		position: absolute;
-		inset: 0;
-		display: grid;
-		place-items: center;
-		align-content: center;
-		gap: 1rem;
-	}
-
-	.play-center p {
-		margin: 0;
-		font-size: 0.82rem;
-		font-weight: 700;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
-		color: var(--on-surface-variant);
 	}
 
 	.stage-frame {
@@ -373,55 +422,6 @@
 		text-decoration: underline;
 		text-underline-offset: 0.25rem;
 		text-decoration-color: rgba(0, 103, 92, 0.25);
-	}
-
-	.final-cta {
-		position: relative;
-		overflow: hidden;
-		max-width: 64rem;
-		margin: 6rem auto 0;
-		padding: 5rem 2rem;
-		border-radius: 1.7rem;
-		background: var(--primary);
-		color: var(--on-primary);
-		text-align: center;
-	}
-
-	.dot-grid {
-		position: absolute;
-		inset: 0;
-		opacity: 0.1;
-		background-image: radial-gradient(circle at 2px 2px, white 1px, transparent 0);
-		background-size: 24px 24px;
-	}
-
-	.cta-content {
-		position: relative;
-		z-index: 1;
-	}
-
-	.final-cta h2 {
-		margin: 0;
-		font-size: clamp(2.2rem, 5vw, 4rem);
-		line-height: 1;
-	}
-
-	.final-cta p {
-		max-width: 38rem;
-		margin: 1.25rem auto 0;
-		font-size: 1.1rem;
-		line-height: 1.7;
-		color: rgba(193, 255, 242, 0.84);
-	}
-
-	.secondary-action {
-		margin-top: 2rem;
-		padding: 1rem 2.2rem;
-		border-radius: 999px;
-		background: white;
-		color: var(--primary);
-		font-size: 1.05rem;
-		box-shadow: 0 18px 30px rgba(0, 0, 0, 0.15);
 	}
 
 	.site-footer {
@@ -475,12 +475,18 @@
 			margin-top: 2rem;
 		}
 
-		.final-cta {
-			padding-inline: 1.25rem;
+		.hero-mascot-row {
+			grid-template-columns: 1fr;
+			gap: 1.25rem;
 		}
 
-		.primary-action,
-		.secondary-action {
+		.hero-mascot-copy {
+			max-width: 32rem;
+			margin: 0 auto;
+			text-align: center;
+		}
+
+		.primary-action {
 			width: 100%;
 		}
 	}
