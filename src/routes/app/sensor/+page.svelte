@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import HeartWaveform from '$lib/components/HeartWaveform.svelte';
@@ -110,6 +111,7 @@
 			currentSession = data.session;
 			currentUser = data.session?.user ?? null;
 			if (data.session?.user) {
+				showEntryAlert = true;
 				void loadDiagnosticSessions(data.session.user.id);
 			}
 		});
@@ -120,10 +122,12 @@
 			currentSession = session;
 			currentUser = session?.user ?? null;
 			if (session?.user) {
+				showEntryAlert = true;
 				void loadDiagnosticSessions(session.user.id);
 			} else {
 				diagnosticSessions = [];
 				selectedDiagnosticSessionId = null;
+				showEntryAlert = false;
 			}
 		});
 
@@ -371,9 +375,10 @@
 		showEntryAlert = false;
 	}
 
-	function takeBreak() {
+	async function takeBreak() {
 		sensorStatus = 'Break mode suggested. Step away, hydrate, and take a short reset.';
 		showEntryAlert = false;
+		await goto('/app/recovery');
 	}
 </script>
 
