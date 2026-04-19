@@ -3,6 +3,9 @@
 	import riveCanvas from '@rive-app/canvas';
 	import otterRiv from '../../assets/otter_boy.riv?url';
 
+	type Variant = 'card' | 'hero';
+	let { variant = 'card' }: { variant?: Variant } = $props();
+
 	type RiveInstance = InstanceType<(typeof riveCanvas)['Rive']>;
 	type ViewModelInstance = InstanceType<(typeof riveCanvas)['ViewModelInstance']>;
 	const { Rive } = riveCanvas;
@@ -87,7 +90,7 @@
 	});
 </script>
 
-<div class="rive-card">
+<div class:rive-card={variant === 'card'} class:rive-hero={variant === 'hero'}>
 	<div
 		bind:this={host}
 		class="rive-shell"
@@ -99,20 +102,36 @@
 		<canvas bind:this={canvas} class="rive-canvas" width={500} height={369}></canvas>
 	</div>
 
-	<div class="rive-copy">
-		<p class="rive-title">Tap Oy</p>
-		<p class="rive-subtitle">
-			A quick click plays Oy&apos;s reaction while the chat stays ready below.
-		</p>
+	{#if variant === 'card'}
+		<div class="rive-copy">
+			<p class="rive-title">Tap Oy</p>
+			<p class="rive-subtitle">
+				A quick click plays Oy&apos;s reaction while the chat stays ready below.
+			</p>
+			{#if loadError}
+				<p class="rive-status rive-status-error">{loadError}</p>
+			{:else if !isLoaded}
+				<p class="rive-status">Loading Oy...</p>
+			{/if}
+		</div>
+	{:else}
 		{#if loadError}
-			<p class="rive-status rive-status-error">{loadError}</p>
+			<p class="rive-hero-status rive-status-error">{loadError}</p>
 		{:else if !isLoaded}
-			<p class="rive-status">Loading Oy...</p>
+			<p class="rive-hero-status">Loading Oy...</p>
 		{/if}
-	</div>
+	{/if}
 </div>
 
 <style>
+	.rive-hero {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-items: center;
+		padding: 1.5rem;
+	}
+
 	.rive-card {
 		display: grid;
 		grid-template-columns: minmax(0, 13rem) minmax(0, 1fr);
@@ -140,6 +159,12 @@
 		overflow: hidden;
 	}
 
+	.rive-hero .rive-shell {
+		width: min(100%, 36rem);
+		background: transparent;
+		box-shadow: none;
+	}
+
 	.rive-shell:focus-visible {
 		outline: 3px solid rgba(0, 103, 92, 0.28);
 		outline-offset: 4px;
@@ -155,6 +180,20 @@
 	.rive-copy {
 		display: grid;
 		gap: 0.35rem;
+	}
+
+	.rive-hero-status {
+		position: absolute;
+		left: 50%;
+		bottom: 1.5rem;
+		transform: translateX(-50%);
+		margin: 0;
+		padding: 0.45rem 0.75rem;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.78);
+		color: var(--on-surface-variant);
+		font-size: 0.85rem;
+		font-weight: 600;
 	}
 
 	.rive-title,

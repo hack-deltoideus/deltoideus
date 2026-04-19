@@ -169,9 +169,12 @@
 	}
 </script>
 
+<div class="site-brand-shell">
+	<a class="site-brand" href="/">Study Buddy</a>
+</div>
+
 <header class="site-nav-shell">
 	<nav class="site-nav">
-		<a class="site-brand" href="/">Study Buddy</a>
 
 		<div class="site-actions">
 			<button class="theme-toggle" type="button" aria-label="Toggle theme" onclick={toggleTheme}>
@@ -208,11 +211,21 @@
 </header>
 
 <style>
+	.site-brand-shell {
+		max-width: 82rem;
+		margin: 0 auto;
+		padding: 0 1.25rem;
+		min-height: 4.25rem;
+		display: flex;
+		align-items: center;
+	}
+
 	.site-nav-shell {
 		position: sticky;
 		top: 0;
 		z-index: 90;
-		padding: 1rem 1.25rem 0;
+		margin-top: -4.25rem;
+		padding: 0 1.25rem 0;
 	}
 
 	.site-nav {
@@ -220,16 +233,21 @@
 		margin: 0 auto;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: flex-end;
 		gap: 0.9rem;
-		padding: 0.25rem 0;
+		min-height: 4.25rem;
 	}
 
 	.site-brand {
+		position: relative;
+		z-index: 92;
+		pointer-events: auto;
+		display: inline-block;
 		font-size: 1.3rem;
 		font-weight: 800;
 		color: var(--primary, #00675c);
 		text-decoration: none;
+		line-height: 1;
 		letter-spacing: 0.02em;
 	}
 
@@ -353,6 +371,7 @@
 	}
 
 	@media (max-width: 560px) {
+		.site-brand-shell,
 		.site-nav-shell {
 			padding-inline: 0.8rem;
 		}
