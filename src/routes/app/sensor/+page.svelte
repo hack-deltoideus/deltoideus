@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
+	import { publishLiveEcgReading } from '$lib/live-ecg-stream';
 	import { connectHeartRateMonitor } from '$lib/polar';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -347,6 +348,11 @@
 				heartRate = reading.heartRate;
 				rrMs = reading.rrMs;
 				hrvMs = reading.hrvMs;
+				publishLiveEcgReading({
+					heartRate: reading.heartRate,
+					rrMs: reading.rrMs ?? Math.round(60000 / Math.max(reading.heartRate, 1)),
+					receivedAtMs: Date.now()
+				});
 
 				const recordedAt = new Date().toISOString();
 				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
@@ -519,6 +525,11 @@
 		heartRate = randomHr;
 		rrMs = randomRr;
 		hrvMs = randomHrv;
+		publishLiveEcgReading({
+			heartRate: randomHr,
+			rrMs: randomRr,
+			receivedAtMs: Date.now()
+		});
 
 		if (sessionStartedAt) {
 			const recordedAt = new Date().toISOString();
