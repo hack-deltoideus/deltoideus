@@ -567,7 +567,7 @@
 	.calendar-frame {
 		display: grid;
 		gap: 1.35rem;
-		max-width: 96rem;
+		max-width: 84rem;
 		margin: 0 auto;
 	}
 

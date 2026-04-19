@@ -603,15 +603,21 @@
 
 	.page-shell,
 	.auth-shell {
-		max-width: 84rem;
-		margin: 0 auto;
-		padding: 1rem 1.5rem 3rem;
+		padding: 1.2rem 1.5rem 3rem;
 	}
 
 	.auth-shell {
+		max-width: 84rem;
+		margin: 0 auto;
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
+	}
+
+	.page-shell > :global(.section-nav),
+	.page-shell > .grid {
+		width: min(100%, 84rem);
+		margin-inline: auto;
 	}
 
 	.auth-panel,
@@ -774,13 +780,36 @@
 		cursor: pointer;
 		font: inherit;
 		font-weight: 800;
-		background: var(--primary);
+		background: linear-gradient(135deg, var(--primary), #128d7f);
 		color: var(--on-primary);
+		box-shadow: 0 6px 0 rgba(0, 103, 92, 0.22);
+		transition:
+			transform 160ms ease,
+			box-shadow 160ms ease,
+			background 160ms ease,
+			color 160ms ease;
 	}
 
 	.button-subtle {
 		background: var(--secondary-container);
 		color: var(--on-surface);
+		box-shadow: none;
+	}
+
+	.button:hover {
+		transform: translateY(-1px);
+	}
+
+	.button:active {
+		transform: translateY(2px);
+		box-shadow: none;
+	}
+
+	.button:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+		transform: none;
+		box-shadow: none;
 	}
 
 	.session-button {

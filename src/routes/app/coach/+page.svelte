@@ -415,15 +415,19 @@
 
 	.auth-shell,
 	.coach-shell {
-		max-width: 84rem;
-		margin: 0 auto;
-		padding: 1.25rem 1.5rem 3.2rem;
+		padding: 1.2rem 1.5rem 3.2rem;
 	}
 
 	.auth-shell {
 		min-height: 100vh;
 		display: grid;
 		place-items: center;
+	}
+
+	.coach-shell > :global(.section-nav),
+	.coach-shell > .coach-panel {
+		width: min(100%, 84rem);
+		margin-inline: auto;
 	}
 
 	.auth-card,
