@@ -2,8 +2,10 @@
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import RiveLoop from '$lib/components/RiveLoop.svelte';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
+	import chillOtterRiv from '../../../assets/chill_otter_boy.riv?url';
 
 	type SupabaseLikeError = {
 		message?: string;
@@ -274,9 +276,11 @@
 
 			<div class="hero-visual">
 				<div class="hero-backdrop"></div>
-				<img
-					src="https://lh3.googleusercontent.com/aida/ADBb0uhukdwp-z-LXZF8jNUldQ-BTqafV_IQ6z2efF6GgK12xHa87IjAz_bwbk33zoJPpzhzSKt3tYselvjBryIdkJukqtnoUrbt9B4LcB-MJm6WyCF9Dxe7F6l4r0hcUJzlakf83sIZUqOvwkYYYf-C8wYEKJjNyBGhB5Z3CHSGlgdYTfRyftUYT0qkCoqgTLKXOruLGQ8MO40bk83BqmjijGv_m8fYIkq-Y_qOEOcC_LoRpwxOYyEHxMd0SDwyICp1cCMOJSiNU98Kgg"
-					alt="Cute otter practicing mindful meditation"
+				<RiveLoop
+					src={chillOtterRiv}
+					fit="cover"
+					containerClass="hero-rive"
+					ariaLabel="Animated otter practicing mindful meditation"
 				/>
 			</div>
 		</section>
@@ -670,17 +674,17 @@
 		position: absolute;
 		inset: 0;
 		border-radius: 1.6rem;
-		background: var(--primary-container);
-		opacity: 0.5;
+		background: rgba(255, 255, 255, 0.96);
+		opacity: 1;
 		transform: rotate(3deg) scale(0.95);
 	}
 
-	.hero-visual img {
+	.hero-visual :global(.hero-rive) {
 		position: relative;
 		z-index: 1;
 		width: 100%;
 		height: 100%;
-		object-fit: cover;
+		background: #fff;
 		border-radius: 1.6rem;
 		box-shadow: 0 24px 48px rgba(33, 47, 66, 0.18);
 	}
