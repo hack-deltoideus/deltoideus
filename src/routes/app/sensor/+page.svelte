@@ -110,6 +110,7 @@
 			currentSession = data.session;
 			currentUser = data.session?.user ?? null;
 			if (data.session?.user) {
+				showEntryAlert = true;
 				void loadDiagnosticSessions(data.session.user.id);
 			}
 		});
@@ -120,10 +121,12 @@
 			currentSession = session;
 			currentUser = session?.user ?? null;
 			if (session?.user) {
+				showEntryAlert = true;
 				void loadDiagnosticSessions(session.user.id);
 			} else {
 				diagnosticSessions = [];
 				selectedDiagnosticSessionId = null;
+				showEntryAlert = false;
 			}
 		});
 
