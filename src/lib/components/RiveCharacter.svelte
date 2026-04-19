@@ -1,14 +1,13 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import riveCanvas from '@rive-app/canvas';
 	import otterRiv from '../../assets/otter_boy.riv?url';
 
 	type Variant = 'card' | 'hero' | 'stacked';
 	let { variant = 'card' }: { variant?: Variant } = $props();
 
-	type RiveInstance = InstanceType<(typeof riveCanvas)['Rive']>;
-	type ViewModelInstance = InstanceType<(typeof riveCanvas)['ViewModelInstance']>;
-	const { Rive } = riveCanvas;
+	type RiveModule = typeof import('@rive-app/canvas');
+	type RiveInstance = InstanceType<RiveModule['Rive']>;
+	type ViewModelInstance = InstanceType<RiveModule['ViewModelInstance']>;
 
 	const ARTBOARD = 'Artboard';
 	const STATE_MACHINE = 'State Machine 1';
@@ -49,32 +48,47 @@
 	}
 
 	onMount(() => {
-		rive = new Rive({
-			src: otterRiv,
-			canvas,
-			artboard: ARTBOARD,
-			stateMachines: STATE_MACHINE,
-			autoplay: true,
-			onLoad: () => {
-				isLoaded = true;
-				loadError = '';
-				resolveViewModelInstance();
-				rive?.setupRiveListeners();
-				resizeSurface();
-			},
-			onLoadError: (event) => {
-				loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Oy.';
-			}
-		});
+		let disposed = false;
 
-		resizeObserver = new ResizeObserver(() => {
-			resizeSurface();
-		});
-		resizeObserver.observe(host);
+		void import('@rive-app/canvas')
+			.then((riveCanvas) => {
+				if (disposed) {
+					return;
+				}
 
-		window.addEventListener('resize', resizeSurface);
+				const { Rive } = riveCanvas;
+
+				rive = new Rive({
+					src: otterRiv,
+					canvas,
+					artboard: ARTBOARD,
+					stateMachines: STATE_MACHINE,
+					autoplay: true,
+					onLoad: () => {
+						isLoaded = true;
+						loadError = '';
+						resolveViewModelInstance();
+						rive?.setupRiveListeners();
+						resizeSurface();
+					},
+					onLoadError: (event) => {
+						loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Oy.';
+					}
+				});
+
+				resizeObserver = new ResizeObserver(() => {
+					resizeSurface();
+				});
+				resizeObserver.observe(host);
+
+				window.addEventListener('resize', resizeSurface);
+			})
+			.catch((error) => {
+				loadError = error instanceof Error ? error.message : 'Unable to load Oy.';
+			});
 
 		return () => {
+			disposed = true;
 			window.removeEventListener('resize', resizeSurface);
 			resizeObserver?.disconnect();
 			resizeObserver = null;
