@@ -633,9 +633,13 @@
 				<p class="section-copy">{sensorStatus}</p>
 
 				<div class="saved-panel">
+					<div class:active={Boolean(sessionStartedAt)} class="recording-banner">
+						<span class:dot-live={Boolean(sessionStartedAt)} class="recording-dot"></span>
+						<span>{sessionStartedAt ? 'Recording in progress' : 'No active recording'}</span>
+					</div>
 					<p class="saved-title">Session status</p>
 					<div class="saved-metrics">
-						<span>{sessionStartedAt ? 'In progress' : 'Not recording'}</span>
+						<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
 						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
 						<span>{sessionSamples.length} captured samples</span>
 					</div>
@@ -1527,6 +1531,32 @@
 	.dot-live {
 		background: var(--error);
 		animation: pulse 1.4s infinite;
+	}
+
+	.recording-banner {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.55rem;
+		padding: 0.55rem 0.8rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.16);
+		color: var(--on-surface-variant);
+		font-size: 0.8rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.recording-banner.active {
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error);
+	}
+
+	.recording-dot {
+		width: 0.62rem;
+		height: 0.62rem;
+		border-radius: 999px;
+		background: rgba(148, 163, 184, 0.5);
 	}
 
 	.chat-shell {
