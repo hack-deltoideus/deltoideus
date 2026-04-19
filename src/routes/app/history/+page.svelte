@@ -56,6 +56,7 @@
 		avg_hrv_ms: number | null;
 		device_name: string | null;
 		capture_type: string | null;
+		raw_data_path: string | null;
 		summary_payload: SessionSummaryPayload | null;
 	};
 
@@ -234,7 +235,7 @@
 			const { data, error } = await supabase
 				.from('sensor_sessions')
 				.select(
-					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_hrv_ms, device_name, capture_type, summary_payload'
+					'id, created_at, started_at, ended_at, duration_seconds, avg_heart_rate, avg_hrv_ms, device_name, capture_type, raw_data_path, summary_payload'
 				)
 				.eq('user_id', userId)
 				.order('started_at', { ascending: false })
@@ -360,6 +361,63 @@
 			})
 			.join(' ');
 	}
+
+	async function deleteHistorySession(sessionId: string) {
+		if (!supabase || !currentUser) {
+			return;
+		}
+
+		const target = historySessions.find((session) => session.id === sessionId);
+		if (!target) {
+			return;
+		}
+
+		const confirmed = browser
+			? window.confirm('Delete this saved session and its raw JSON file, if one exists?')
+			: false;
+
+		if (!confirmed) {
+			return;
+		}
+
+		historyStatus = '';
+
+		try {
+			let storageWarning = '';
+
+			if (target.raw_data_path) {
+				const { error: storageError } = await supabase.storage
+					.from('diagnostic-raw')
+					.remove([target.raw_data_path]);
+
+				if (storageError) {
+					storageWarning = describeError(storageError, 'Raw session file could not be deleted.');
+				}
+			}
+
+			const { data: deletedRows, error } = await supabase
+				.from('sensor_sessions')
+				.delete()
+				.select('id')
+				.eq('id', target.id)
+				.eq('user_id', currentUser.id);
+
+			if (error) {
+				throw error;
+			}
+
+			if (!deletedRows || deletedRows.length === 0) {
+				throw new Error('No matching session was deleted. Check row-level permissions for sensor_sessions.');
+			}
+
+			await loadHistorySessions(currentUser.id);
+			historyStatus = storageWarning
+				? `Saved session deleted. ${storageWarning}`
+				: 'Saved session deleted.';
+		} catch (error) {
+			historyStatus = describeError(error, 'Failed to delete saved session.');
+		}
+	}
 </script>
 
 <svelte:head>
@@ -482,14 +540,20 @@
 
 				{#if sessionCards.length > 0}
 					<div class="session-grid">
-						{#each sessionCards as session}
+						{#each sessionCards as session, index}
 							<article class="session-card">
 								<div class="session-head">
 									<div>
+										<p class="session-index">S{index + 1}</p>
 										<p class="session-date">{session.dateLabel}</p>
 										<h3>{session.activityLabel}</h3>
 									</div>
-									<p class="session-time">{session.timeLabel}</p>
+									<div class="session-head-actions">
+										<p class="session-time">{session.timeLabel}</p>
+										<button class="session-delete" type="button" onclick={() => deleteHistorySession(session.id)}>
+											Delete
+										</button>
+									</div>
 								</div>
 
 								<div class="session-metrics">
@@ -748,6 +812,12 @@
 		gap: 1rem;
 	}
 
+	.session-head-actions {
+		display: grid;
+		justify-items: end;
+		gap: 0.55rem;
+	}
+
 	.section-heading h2 {
 		margin: 0;
 		font-size: 1.45rem;
@@ -832,6 +902,32 @@
 		margin: 0;
 		font-weight: 700;
 		color: var(--on-surface-variant);
+	}
+
+	.session-index {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin: 0 0 0.45rem;
+		padding: 0.32rem 0.58rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--primary, #00675c) 12%, white);
+		color: var(--primary, #00675c);
+		font-size: 0.78rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+	}
+
+	.session-delete {
+		border: 0;
+		border-radius: 999px;
+		padding: 0.55rem 0.8rem;
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error, #b31b25);
+		font: inherit;
+		font-weight: 800;
+		cursor: pointer;
 	}
 
 	.session-metrics {
