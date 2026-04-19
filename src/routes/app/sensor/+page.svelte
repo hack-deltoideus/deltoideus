@@ -2,9 +2,8 @@
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
+	import HeartWaveform from '$lib/components/HeartWaveform.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
-	import { publishLiveEcgReading } from '$lib/live-ecg-stream';
-	import { connectHeartRateMonitor } from '$lib/polar';
 	import {
 		connectSharedSensor,
 		disconnectSharedSensor,
@@ -49,17 +48,25 @@
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
 	let showEntryAlert = $state(false);
+	let activePanel = $state<'ecg' | 'sessions'>('ecg');
+	let waveformSessionKey = $state(0);
+	let nowMs = $state(Date.now());
+	let lastReadingAtMs = $state<number | null>(null);
+	let lastKnownConnectionState = false;
 
 	const displayName = $derived(getDisplayName(currentUser));
 	const selectedDiagnosticSession = $derived(
 		diagnosticSessions.find((session) => session.id === selectedDiagnosticSessionId) ?? null
 	);
-
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
 	}
 
 	onMount(() => {
+		const clock = window.setInterval(() => {
+			nowMs = Date.now();
+		}, 250);
+
 		const unsubscribeSensor = sensorSession.subscribe((state) => {
 			heartRate = state.heartRate;
 			rrMs = state.rrMs;
@@ -72,10 +79,21 @@
 			sessionStartedAt = state.sessionStartedAt;
 			sessionDeviceName = state.sessionDeviceName;
 			sessionSamples = state.sessionSamples;
+
+			if (typeof state.heartRate === 'number' || typeof state.rrMs === 'number') {
+				lastReadingAtMs = Date.now();
+			}
+
+			if (state.isSensorConnected && !lastKnownConnectionState) {
+				waveformSessionKey += 1;
+			}
+
+			lastKnownConnectionState = state.isSensorConnected;
 		});
 
 		if (!supabase) {
 			return () => {
+				window.clearInterval(clock);
 				unsubscribeSensor();
 			};
 		}
@@ -107,6 +125,7 @@
 		});
 
 		return () => {
+			window.clearInterval(clock);
 			subscription.unsubscribe();
 			unsubscribeSensor();
 		};
@@ -256,35 +275,6 @@
 		await connectSharedSensor();
 	}
 
-		try {
-			const startedAt = new Date().toISOString();
-			sessionStartedAt = startedAt;
-			sessionSamples = [];
-			lastSavedDiagnosticSession = null;
-
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				heartRate = reading.heartRate;
-				rrMs = reading.rrMs;
-				hrvMs = reading.hrvMs;
-				publishLiveEcgReading({
-					heartRate: reading.heartRate,
-					rrMs: reading.rrMs ?? Math.round(60000 / Math.max(reading.heartRate, 1)),
-					receivedAtMs: Date.now()
-				});
-
-				const recordedAt = new Date().toISOString();
-				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
-				sessionSamples = [
-					...sessionSamples,
-					{
-						recorded_at: recordedAt,
-						elapsed_ms: elapsedMs,
-						heart_rate: reading.heartRate,
-						rr_ms: reading.rrMs ?? null,
-						hrv_ms: reading.hrvMs ?? null
-					}
-				].slice(-600);
-			});
 	function startSession() {
 		startSharedSession(Boolean(currentUser));
 		lastSavedDiagnosticSession = null;
@@ -366,34 +356,6 @@
 		}
 	}
 
-	function simulateSpike() {
-		const randomHr = 95 + Math.floor(Math.random() * 26);
-		const randomRr = 520 + Math.floor(Math.random() * 120);
-		const randomHrv = 18 + Math.floor(Math.random() * 28);
-
-		heartRate = randomHr;
-		rrMs = randomRr;
-		hrvMs = randomHrv;
-		publishLiveEcgReading({
-			heartRate: randomHr,
-			rrMs: randomRr,
-			receivedAtMs: Date.now()
-		});
-
-		if (sessionStartedAt) {
-			const recordedAt = new Date().toISOString();
-			const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(sessionStartedAt).getTime());
-			sessionSamples = [
-				...sessionSamples,
-				{
-					recorded_at: recordedAt,
-					elapsed_ms: elapsedMs,
-					heart_rate: randomHr,
-					rr_ms: randomRr,
-					hrv_ms: randomHrv
-				}
-			].slice(-600);
-		}
 	function acknowledgeAlert() {
 		showEntryAlert = false;
 	}
@@ -530,16 +492,73 @@
 			<article class="data-card">
 				<div class="section-heading">
 					<div>
-						<p class="eyebrow">Saved Sessions</p>
-						<h2>Session data explorer</h2>
+						<p class="eyebrow">{activePanel === 'ecg' ? 'Live Monitor' : 'Saved Sessions'}</p>
+						<h2>{activePanel === 'ecg' ? 'Streaming waveform surface' : 'Session data explorer'}</h2>
 					</div>
-					{#if isLoadingDiagnostics}
-						<p class="inline-hint loading-hint">Loading...</p>
-					{/if}
+					<div class="panel-controls">
+						{#if isLoadingDiagnostics}
+							<p class="inline-hint loading-hint">Loading...</p>
+						{/if}
+						<div class="view-toggle" role="tablist" aria-label="Sensor detail views">
+							<button
+								class:active={activePanel === 'ecg'}
+								class="toggle-button"
+								type="button"
+								onclick={() => (activePanel = 'ecg')}
+							>
+								ECG Graph
+							</button>
+							<button
+								class:active={activePanel === 'sessions'}
+								class="toggle-button"
+								type="button"
+								onclick={() => (activePanel = 'sessions')}
+							>
+								Saved Sessions
+							</button>
+						</div>
+					</div>
 				</div>
 
 				<div class="data-layout">
-					{#if diagnosticSessions.length > 0}
+					{#if activePanel === 'ecg'}
+						<div class="viewer-stack">
+							<div class="ecg-card">
+								<div class="ecg-card-header">
+									<div>
+										<p class="eyebrow">Waveform</p>
+										<h3>Live ECG waveform</h3>
+									</div>
+									<div class="ecg-chip">
+										<span class="material-symbols-outlined">ecg_heart</span>
+										<span>{sessionDeviceName ?? 'Polar H9'}</span>
+									</div>
+								</div>
+
+								<div class="monitor-shell">
+									<HeartWaveform
+										hr={heartRate ?? null}
+										rr={rrMs ?? null}
+										sampleAtMs={lastReadingAtMs}
+										sessionKey={waveformSessionKey}
+										label="Simulated waveform"
+									/>
+								</div>
+							</div>
+
+							{#if lastSavedDiagnosticSession}
+								<div class="saved-panel data-summary">
+									<p class="saved-title">Latest saved session</p>
+									<div class="saved-metrics">
+										<span>{formatSessionDate(lastSavedDiagnosticSession.started_at)}</span>
+										<span>{lastSavedDiagnosticSession.sample_count} samples</span>
+										<span>Avg HR {formatMetric(lastSavedDiagnosticSession.avg_heart_rate)}</span>
+										<span>Avg HRV {formatMetric(lastSavedDiagnosticSession.avg_hrv_ms, 1)}</span>
+									</div>
+								</div>
+							{/if}
+						</div>
+					{:else if diagnosticSessions.length > 0}
 						<div class="session-list" role="list">
 							{#each diagnosticSessions as session, index}
 								<article class:selected={session.id === selectedDiagnosticSessionId} class="session-item">
@@ -560,11 +579,12 @@
 						<p class="inline-hint">Save a sensor session to populate your data view.</p>
 					{/if}
 
-					{#if diagnosticStatus}
+					{#if activePanel === 'sessions'}
+						{#if diagnosticStatus}
 						<p class="inline-status">{diagnosticStatus}</p>
-					{/if}
+						{/if}
 
-					{#if selectedDiagnosticSession}
+						{#if selectedDiagnosticSession}
 						<div class="saved-panel data-summary">
 							<p class="saved-title">Selected session</p>
 							<div class="saved-metrics">
@@ -627,11 +647,12 @@
 								<p class="inline-hint">No segment summary is available for this session yet.</p>
 							{/if}
 						</div>
-					{:else}
+						{:else}
 						<div class="saved-panel data-summary">
 							<p class="saved-title">No data selected</p>
 							<p class="saved-copy">Choose a saved session to inspect its summary JSON and segment metrics.</p>
 						</div>
+						{/if}
 					{/if}
 				</div>
 			</article>
@@ -819,6 +840,47 @@
 		flex-wrap: wrap;
 	}
 
+	.panel-controls,
+	.view-toggle {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.8rem;
+		flex-wrap: wrap;
+	}
+
+	.view-toggle {
+		padding: 0.28rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 82%, white);
+		border: 1px solid var(--panel-border);
+	}
+
+	.toggle-button {
+		border: 0;
+		border-radius: 999px;
+		padding: 0.62rem 0.95rem;
+		background: transparent;
+		color: var(--on-surface-variant);
+		font: inherit;
+		font-weight: 800;
+		cursor: pointer;
+		transition:
+			background 160ms ease,
+			color 160ms ease,
+			transform 160ms ease;
+	}
+
+	.toggle-button.active {
+		background: linear-gradient(135deg, var(--primary), #128d7f);
+		color: var(--on-primary);
+		box-shadow: 0 6px 14px rgba(0, 103, 92, 0.2);
+	}
+
+	.toggle-button:hover {
+		transform: translateY(-1px);
+	}
+
 	.live-indicator {
 		display: inline-flex;
 		align-items: center;
@@ -888,6 +950,49 @@
 	.metric-card {
 		padding: 1rem;
 		background: color-mix(in srgb, var(--surface-container, #dce9ff) 68%, white);
+	}
+
+	.ecg-card {
+		border: 1px solid #c9deff;
+		box-shadow:
+			0 8px 0 0 #dce9ff,
+			0 10px 24px rgba(33, 47, 66, 0.08);
+	}
+
+	.viewer-stack {
+		display: grid;
+		gap: 1rem;
+	}
+
+	.ecg-card {
+		padding: 1.4rem;
+		border-radius: 1.8rem;
+		background: linear-gradient(180deg, #dce9ff 0%, #eaf1ff 100%);
+	}
+
+	.ecg-card-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.ecg-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		padding: 0.78rem 1rem;
+		border-radius: 1.25rem;
+		background: rgba(255, 255, 255, 0.9);
+		color: var(--primary);
+		font-size: 0.86rem;
+		font-weight: 800;
+		box-shadow: 0 4px 0 0 #dce9ff;
+	}
+
+	.monitor-shell {
+		margin-top: 1rem;
 	}
 
 	.metric-value {
@@ -1097,6 +1202,12 @@
 	.saved-copy {
 		margin: 0.7rem 0 0;
 		line-height: 1.6;
+	}
+
+	h3 {
+		margin: 0.2rem 0 0;
+		font-size: clamp(1.3rem, 2vw, 1.8rem);
+		line-height: 1.05;
 	}
 
 	.alert-overlay {
