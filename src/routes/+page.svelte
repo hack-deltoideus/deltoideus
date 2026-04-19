@@ -12,6 +12,8 @@
 
 	let currentSession = $state<Session | null>(null);
 	let currentUser = $state<User | null>(null);
+	let authStatus = $state('');
+	let isSigningIn = $state(false);
 
 	onMount(() => {
 		if (!browser || !supabase) {
@@ -34,6 +36,32 @@
 			subscription.unsubscribe();
 		};
 	});
+
+	async function signInWithGoogle() {
+		if (!browser || !supabase || isSigningIn) {
+			return;
+		}
+
+		isSigningIn = true;
+		authStatus = '';
+
+		try {
+			const { error } = await supabase.auth.signInWithOAuth({
+				provider: 'google',
+				options: {
+					redirectTo: `${window.location.origin}/app`
+				}
+			});
+
+			if (error) {
+				throw error;
+			}
+		} catch (error) {
+			authStatus = error instanceof Error ? error.message : 'Failed to start Google sign-in.';
+		} finally {
+			isSigningIn = false;
+		}
+	}
 </script>
 
 <main class="landing-shell">
@@ -69,14 +97,19 @@
 
 		{#if !currentSession || !currentUser}
 			<div class="hero-actions">
-				<a class="primary-action" href="/app">
-					<span>Login</span>
+				<button class="primary-action" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
+					<span>{isSigningIn ? 'Connecting...' : 'Login'}</span>
 					<span class="material-symbols-outlined">arrow_forward</span>
-				</a>
+				</button>
 				<p>
 					New here?
-					<a href="#pricing">Make an account</a>
+					<button class="inline-auth-link" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
+						Make an account
+					</button>
 				</p>
+				{#if authStatus}
+					<p class="hero-auth-status">{authStatus}</p>
+				{/if}
 			</div>
 		{/if}
 	</section>
@@ -244,16 +277,22 @@
 		padding: 0 1.5rem 6rem;
 	}
 
-	.hero-actions p a {
+	.inline-auth-link {
 		color: var(--on-surface-variant);
 		text-decoration: none;
+		font: inherit;
+		font-weight: 700;
+		background: none;
+		border: 0;
+		padding: 0;
+		cursor: pointer;
 		transition:
 			color 160ms ease,
 			transform 160ms ease,
 			border-color 160ms ease;
 	}
 
-	.hero-actions p a:hover {
+	.inline-auth-link:hover {
 		color: var(--primary);
 	}
 
@@ -273,6 +312,18 @@
 	.primary-action:hover {
 		transform: translateY(-1px) scale(1.01);
 		filter: brightness(1.03);
+	}
+
+	.primary-action:disabled,
+	.inline-auth-link:disabled {
+		opacity: 0.65;
+		cursor: wait;
+	}
+
+	.hero-auth-status {
+		margin: 0;
+		color: var(--error);
+		font-weight: 600;
 	}
 
 	.hero {
@@ -417,7 +468,7 @@
 		color: var(--on-surface-variant);
 	}
 
-	.hero-actions p a {
+	.inline-auth-link {
 		color: var(--primary);
 		text-decoration: underline;
 		text-underline-offset: 0.25rem;
