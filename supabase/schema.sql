@@ -106,6 +106,12 @@ create policy "Users can update own sessions"
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "Users can delete own sessions" on public.sensor_sessions;
+create policy "Users can delete own sessions"
+  on public.sensor_sessions for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
 drop policy if exists "Allow public read check_ins" on public.check_ins;
 drop policy if exists "Users can read own check_ins" on public.check_ins;
 create policy "Users can read own check_ins"
@@ -153,6 +159,15 @@ create policy "Users can update own diagnostic raw data"
     and (storage.foldername(name))[1] = auth.uid()::text
   )
   with check (
+    bucket_id = 'diagnostic-raw'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+drop policy if exists "Users can delete own diagnostic raw data" on storage.objects;
+create policy "Users can delete own diagnostic raw data"
+  on storage.objects for delete
+  to authenticated
+  using (
     bucket_id = 'diagnostic-raw'
     and (storage.foldername(name))[1] = auth.uid()::text
   );

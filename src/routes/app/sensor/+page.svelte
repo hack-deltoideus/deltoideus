@@ -280,6 +280,61 @@
 		simulateSharedSpike();
 	}
 
+	async function deleteDiagnosticSession(session: SavedDiagnosticSession) {
+		if (!supabase || !currentUser) {
+			return;
+		}
+
+		const confirmed = browser
+			? window.confirm('Delete this saved session and its raw JSON file, if one exists?')
+			: false;
+
+		if (!confirmed) {
+			return;
+		}
+
+		diagnosticStatus = '';
+
+		try {
+			let storageWarning = '';
+
+			if (session.raw_data_path) {
+				const { error: storageError } = await supabase.storage
+					.from('diagnostic-raw')
+					.remove([session.raw_data_path]);
+
+				if (storageError) {
+					storageWarning = describeError(storageError, 'Raw session file could not be deleted.');
+				}
+			}
+
+			const { data: deletedRows, error } = await supabase
+				.from('sensor_sessions')
+				.delete()
+				.select('id')
+				.eq('id', session.id)
+				.eq('user_id', currentUser.id);
+
+			if (error) {
+				throw error;
+			}
+
+			if (!deletedRows || deletedRows.length === 0) {
+				throw new Error('No matching session was deleted. Check row-level permissions for sensor_sessions.');
+			}
+
+			await loadDiagnosticSessions(currentUser.id);
+			if (lastSavedDiagnosticSession?.id === session.id) {
+				lastSavedDiagnosticSession = null;
+			}
+			diagnosticStatus = storageWarning
+				? `Saved session deleted. ${storageWarning}`
+				: 'Saved session deleted.';
+		} catch (error) {
+			diagnosticStatus = describeError(error, 'Failed to delete saved session.');
+		}
+	}
+
 	function acknowledgeAlert() {
 		showEntryAlert = false;
 	}
@@ -427,18 +482,19 @@
 				<div class="data-layout">
 					{#if diagnosticSessions.length > 0}
 						<div class="session-list" role="list">
-							{#each diagnosticSessions as session}
-								<button
-									class:selected={session.id === selectedDiagnosticSessionId}
-									class="session-item"
-									type="button"
-									onclick={() => (selectedDiagnosticSessionId = session.id)}
-								>
-									<span class="session-item-date">{formatSessionDate(session.started_at)}</span>
-									<span class="session-item-meta">
-										{formatMetric(session.avg_heart_rate)} bpm · {formatMetric(session.avg_hrv_ms, 1)} ms HRV
-									</span>
-								</button>
+							{#each diagnosticSessions as session, index}
+								<article class:selected={session.id === selectedDiagnosticSessionId} class="session-item">
+									<button class="session-select" type="button" onclick={() => (selectedDiagnosticSessionId = session.id)}>
+										<span class="session-index">S{index + 1}</span>
+										<span class="session-item-date">{formatSessionDate(session.started_at)}</span>
+										<span class="session-item-meta">
+											{formatMetric(session.avg_heart_rate)} bpm · {formatMetric(session.avg_hrv_ms, 1)} ms HRV
+										</span>
+									</button>
+									<button class="session-delete" type="button" onclick={() => deleteDiagnosticSession(session)}>
+										Delete
+									</button>
+								</article>
 							{/each}
 						</div>
 					{:else}
@@ -879,20 +935,47 @@
 
 	.session-item {
 		display: grid;
-		gap: 0.25rem;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 0.75rem;
 		width: 100%;
-		padding: 0.95rem 1rem;
-		text-align: left;
+		padding: 0.75rem;
 		border: 1px solid transparent;
 		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 76%, white);
-		cursor: pointer;
-		font: inherit;
-		color: inherit;
 	}
 
 	.session-item.selected {
 		border-color: color-mix(in srgb, var(--primary, #00675c) 56%, transparent);
 		background: color-mix(in srgb, var(--primary, #00675c) 14%, white);
+	}
+
+	.session-select {
+		display: grid;
+		gap: 0.25rem;
+		width: 100%;
+		padding: 0.2rem 0.25rem;
+		text-align: left;
+		border: 0;
+		background: transparent;
+		cursor: pointer;
+		font: inherit;
+		color: inherit;
+	}
+
+	.session-index {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		margin: 0 0 0.45rem;
+		padding: 0.32rem 0.58rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--primary, #00675c) 12%, white);
+		color: var(--primary, #00675c);
+		font-size: 0.78rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		width: fit-content;
 	}
 
 	.session-item-date {
@@ -902,6 +985,17 @@
 	.session-item-meta {
 		font-size: 0.92rem;
 		color: var(--on-surface-variant);
+	}
+
+	.session-delete {
+		border: 0;
+		border-radius: 999px;
+		padding: 0.55rem 0.8rem;
+		background: rgba(179, 27, 37, 0.1);
+		color: var(--error, #b31b25);
+		font: inherit;
+		font-weight: 800;
+		cursor: pointer;
 	}
 
 	.segment-grid {
