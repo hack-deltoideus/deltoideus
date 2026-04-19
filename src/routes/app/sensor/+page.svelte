@@ -10,10 +10,13 @@
 		connectSharedSensor,
 		disconnectSharedSensor,
 		endSharedSession,
+		markSharedDetectionFeedback,
+		resetSharedDetectionTuning,
 		sensorSession,
 		simulateSharedSpike,
 		startSharedSession,
 		type DiagnosticSample,
+		type RmssdDiagnosis,
 		type SavedDiagnosticSession
 	} from '$lib/sensor-session';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
@@ -36,6 +39,14 @@
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
+	let baselineRmssdMs = $state<number | undefined>(undefined);
+	let currentRmssdMs = $state<number | undefined>(undefined);
+	let rmssdDeltaPercent = $state<number | undefined>(undefined);
+	let rmssdDiagnosis = $state<RmssdDiagnosis>('building-baseline');
+	let baselineProgressPercent = $state(0);
+	let baselineCaptureSeconds = $state(30);
+	let diagnosisWindowSeconds = $state(30);
+	let rmssdThresholdDropPercent = $state(22);
 	let isConnecting = $state(false);
 	let isSavingSession = $state(false);
 	let isSensorConnected = $state(false);
@@ -75,6 +86,14 @@
 			heartRate = state.heartRate;
 			rrMs = state.rrMs;
 			hrvMs = state.hrvMs;
+			baselineRmssdMs = state.baselineRmssdMs;
+			currentRmssdMs = state.currentRmssdMs;
+			rmssdDeltaPercent = state.rmssdDeltaPercent;
+			rmssdDiagnosis = state.rmssdDiagnosis;
+			baselineProgressPercent = state.baselineProgressPercent;
+			baselineCaptureSeconds = state.baselineCaptureSeconds;
+			diagnosisWindowSeconds = state.diagnosisWindowSeconds;
+			rmssdThresholdDropPercent = state.rmssdThresholdDropPercent;
 			isConnecting = state.isConnecting;
 			isSavingSession = state.isSavingSession;
 			isSensorConnected = state.isSensorConnected;
@@ -316,6 +335,58 @@
 		simulateSharedSpike();
 	}
 
+	function formatSignedPercent(value: number | undefined): string {
+		if (typeof value !== 'number') {
+			return '--';
+		}
+
+		return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
+	}
+
+	function diagnosisHeadline(status: RmssdDiagnosis): string {
+		if (status === 'building-baseline') {
+			return 'Building your RMSSD baseline';
+		}
+
+		if (status === 'stressed') {
+			return 'RMSSD is below baseline';
+		}
+
+		if (status === 'recovering') {
+			return 'RMSSD is recovering';
+		}
+
+		return 'RMSSD is near baseline';
+	}
+
+	function diagnosisCopy(status: RmssdDiagnosis): string {
+		if (status === 'building-baseline') {
+			return `Stay settled for ${baselineCaptureSeconds} seconds so we can lock in your baseline RMSSD.`;
+		}
+
+		if (status === 'stressed') {
+			return `Your current RMSSD is more than ${rmssdThresholdDropPercent}% below baseline, which we treat as a stress signal.`;
+		}
+
+		if (status === 'recovering') {
+			return 'Your RMSSD has climbed back above baseline, which usually points toward recovery.';
+		}
+
+		return 'Your current RMSSD is still close to your session baseline.';
+	}
+
+	function tuneDetectionMoreSensitive() {
+		markSharedDetectionFeedback('stress');
+	}
+
+	function tuneDetectionLessSensitive() {
+		markSharedDetectionFeedback('normal');
+	}
+
+	function resetDetectionTuning() {
+		resetSharedDetectionTuning();
+	}
+
 	async function deleteDiagnosticSession(session: SavedDiagnosticSession) {
 		if (!supabase || !currentUser) {
 			return;
@@ -421,11 +492,49 @@
 				<div class="section-heading">
 					<div>
 						<p class="eyebrow">Live Sensor</p>
-						<h2>Current device stream</h2>
+						<h2>RMSSD baseline detector</h2>
 					</div>
 					<div class="live-indicator">
 						<span class:dot-live={isSensorConnected} class="live-dot"></span>
 						<span>{isSensorConnected ? 'Live' : 'Standby'}</span>
+					</div>
+				</div>
+
+				<div class="rmssd-hero diagnosis-{rmssdDiagnosis}">
+					<p class="rmssd-kicker">Primary signal</p>
+					<h3>{diagnosisHeadline(rmssdDiagnosis)}</h3>
+					<p class="rmssd-copy">{diagnosisCopy(rmssdDiagnosis)}</p>
+
+					<div class="metric-grid rmssd-grid">
+						<div class="metric-card">
+							<p class="metric-label">BASELINE RMSSD</p>
+							<p class="metric-value secondary">{baselineRmssdMs ?? '--'} <span>MS</span></p>
+						</div>
+						<div class="metric-card">
+							<p class="metric-label">CURRENT RMSSD</p>
+							<p class="metric-value secondary">{currentRmssdMs ?? '--'} <span>MS</span></p>
+						</div>
+						<div class="metric-card">
+							<p class="metric-label">CHANGE</p>
+							<p class="metric-value secondary">{formatSignedPercent(rmssdDeltaPercent)} <span>VS BASELINE</span></p>
+						</div>
+						<div class="metric-card">
+							<p class="metric-label">STRESS THRESHOLD</p>
+							<p class="metric-value">{rmssdThresholdDropPercent}<span>% DROP</span></p>
+						</div>
+					</div>
+
+					<div class="baseline-panel">
+						<div class="baseline-row">
+							<p class="saved-title">Baseline capture</p>
+							<p class="baseline-progress">{baselineProgressPercent.toFixed(0)}% of {baselineCaptureSeconds}s</p>
+						</div>
+						<div class="baseline-track">
+							<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
+						</div>
+						<p class="saved-copy">
+							We capture your baseline for the first {baselineCaptureSeconds} seconds, then compare your current {diagnosisWindowSeconds}-second RMSSD window against it.
+						</p>
 					</div>
 				</div>
 
@@ -440,7 +549,7 @@
 					</div>
 					<div class="metric-card">
 						<p class="metric-label">HRV</p>
-						<p class="metric-value secondary">{hrvMs ?? '--'} <span>MS</span></p>
+						<p class="metric-value secondary">{hrvMs ?? '--'} <span>RMSSD</span></p>
 					</div>
 				</div>
 
@@ -467,7 +576,32 @@
 						</button>
 						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
 					</div>
+
+					<div class="feedback-buttons">
+						<button class="button button-subtle" onclick={tuneDetectionMoreSensitive} disabled={!sessionStartedAt}>
+							This feels stressful
+						</button>
+						<button class="button button-subtle" onclick={tuneDetectionLessSensitive} disabled={!sessionStartedAt}>
+							This feels like normal focus
+						</button>
+						<button class="button button-subtle" onclick={resetDetectionTuning} disabled={!sessionStartedAt}>
+							Reset threshold
+						</button>
+					</div>
 				</div>
+
+				{#if rmssdDiagnosis === 'stressed'}
+					<div class="break-cta-panel">
+						<p class="saved-title">Break recommended</p>
+						<p class="saved-copy">
+							Your RMSSD has dropped below your session baseline. Step into recovery before you push further.
+						</p>
+						<a class="button button-break" href="/app/recovery">
+							<span class="material-symbols-outlined">spa</span>
+							<span>You're stressed. Take a break</span>
+						</a>
+					</div>
+				{/if}
 
 				<p class="section-copy">{sensorStatus}</p>
 
@@ -959,6 +1093,10 @@
 		margin-top: 1rem;
 	}
 
+	.rmssd-grid {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+
 	.metric-grid.compact {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -973,6 +1111,103 @@
 	.metric-card {
 		padding: 1rem;
 		background: color-mix(in srgb, var(--surface-container, #dce9ff) 68%, white);
+	}
+
+	.break-cta-panel {
+		margin-top: 1rem;
+		padding: 1rem;
+		border-radius: 1.35rem;
+		border: 1px solid rgba(251, 81, 81, 0.22);
+		background: linear-gradient(180deg, rgba(251, 81, 81, 0.08), rgba(255, 255, 255, 0.9));
+		display: grid;
+		gap: 0.85rem;
+	}
+
+	.button-break {
+		background: linear-gradient(135deg, #d9485f, #f97316);
+		box-shadow: 0 6px 0 rgba(166, 46, 76, 0.22);
+	}
+
+	.rmssd-hero {
+		margin-top: 1rem;
+		padding: 1.15rem;
+		border-radius: 1.5rem;
+		border: 1px solid rgba(160, 174, 197, 0.26);
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 78%, white);
+	}
+
+	.diagnosis-building-baseline {
+		border-color: rgba(160, 174, 197, 0.34);
+	}
+
+	.diagnosis-steady {
+		border-color: rgba(91, 244, 222, 0.34);
+	}
+
+	.diagnosis-stressed {
+		border-color: rgba(251, 81, 81, 0.38);
+		background: linear-gradient(180deg, rgba(251, 81, 81, 0.1), rgba(255, 255, 255, 0.92));
+	}
+
+	.diagnosis-recovering {
+		border-color: rgba(82, 191, 154, 0.4);
+		background: linear-gradient(180deg, rgba(91, 244, 222, 0.12), rgba(255, 255, 255, 0.94));
+	}
+
+	.rmssd-kicker,
+	.baseline-progress {
+		margin: 0;
+		font-size: 0.82rem;
+		font-weight: 800;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--on-surface-variant);
+	}
+
+	.rmssd-hero h3 {
+		margin: 0.35rem 0 0;
+		font-size: 1.8rem;
+		line-height: 1.05;
+	}
+
+	.rmssd-copy {
+		margin: 0.65rem 0 0;
+		color: var(--on-surface-variant);
+		line-height: 1.6;
+	}
+
+	.baseline-panel {
+		margin-top: 1rem;
+		padding: 1rem;
+		border-radius: 1.25rem;
+		background: rgba(255, 255, 255, 0.6);
+	}
+
+	.baseline-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.8rem;
+	}
+
+	.baseline-track {
+		height: 0.75rem;
+		margin-top: 0.75rem;
+		border-radius: 999px;
+		background: rgba(160, 174, 197, 0.24);
+		overflow: hidden;
+	}
+
+	.baseline-fill {
+		height: 100%;
+		border-radius: 999px;
+		background: linear-gradient(135deg, var(--primary), #128d7f);
+	}
+
+	.feedback-buttons {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.75rem;
 	}
 
 	.ecg-card {
@@ -1325,7 +1560,9 @@
 
 	@media (max-width: 700px) {
 		.metric-grid,
-		.metric-grid.compact {
+		.metric-grid.compact,
+		.rmssd-grid,
+		.feedback-buttons {
 			grid-template-columns: 1fr;
 		}
 	}

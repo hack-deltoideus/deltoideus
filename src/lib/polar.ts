@@ -2,6 +2,7 @@ export type PolarReading = {
   heartRate: number;
   rrMs?: number;
   hrvMs?: number;
+  rrIntervalsMs?: number[];
 };
 
 const HEART_RATE_SERVICE = 0x180d;
@@ -22,12 +23,18 @@ export function parseHeartRateMeasurement(value: DataView): PolarReading {
 
   const hasRrInterval = (flags & 0x10) !== 0;
   let rrMs: number | undefined;
+  let rrIntervalsMs: number[] | undefined;
   if (hasRrInterval && value.byteLength >= offset + 2) {
-    const rrRaw = value.getUint16(offset, true);
-    rrMs = Math.round((rrRaw / 1024) * 1000);
+    rrIntervalsMs = [];
+    while (offset + 1 < value.byteLength) {
+      const rrRaw = value.getUint16(offset, true);
+      rrIntervalsMs.push(Math.round((rrRaw / 1024) * 1000));
+      offset += 2;
+    }
+    rrMs = rrIntervalsMs.at(-1);
   }
 
-  return { heartRate, rrMs };
+  return { heartRate, rrMs, rrIntervalsMs };
 }
 
 function calculateRmssd(rrHistory: number[]): number | undefined {
@@ -80,9 +87,9 @@ export async function connectHeartRateMonitor(
 
     const reading = parseHeartRateMeasurement(value);
 
-    if (typeof reading.rrMs === 'number') {
-      recentRrIntervals.push(reading.rrMs);
-      if (recentRrIntervals.length > 12) {
+    if (reading.rrIntervalsMs?.length) {
+      recentRrIntervals.push(...reading.rrIntervalsMs);
+      while (recentRrIntervals.length > 30) {
         recentRrIntervals.shift();
       }
 
