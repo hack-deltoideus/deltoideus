@@ -60,7 +60,7 @@
 				resizeSurface();
 			},
 			onLoadError: (event) => {
-				loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Kelp.';
+				loadError = typeof event?.data === 'string' ? event.data : 'Unable to load Oy.';
 			}
 		});
 
@@ -94,20 +94,20 @@
 		role="button"
 		tabindex="0"
 		onkeydown={handleKeydown}
-		aria-label="Tap Kelp to animate"
+		aria-label="Tap Oy to animate"
 	>
 		<canvas bind:this={canvas} class="rive-canvas" width={500} height={369}></canvas>
 	</div>
 
 	<div class="rive-copy">
-		<p class="rive-title">Tap Kelp</p>
+		<p class="rive-title">Tap Oy</p>
 		<p class="rive-subtitle">
-			A quick click plays Kelp&apos;s reaction while the chat stays ready below.
+			A quick click plays Oy&apos;s reaction while the chat stays ready below.
 		</p>
 		{#if loadError}
 			<p class="rive-status rive-status-error">{loadError}</p>
 		{:else if !isLoaded}
-			<p class="rive-status">Loading Kelp...</p>
+			<p class="rive-status">Loading Oy...</p>
 		{/if}
 	</div>
 </div>

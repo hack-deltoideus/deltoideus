@@ -40,7 +40,9 @@ Set these values in `.env`:
 - `PUBLIC_SUPABASE_URL`
 - `PUBLIC_SUPABASE_ANON_KEY`
 - Enable Google OAuth in Supabase Auth and add your local/dev redirect URLs there
-- `GEMINI_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`)
+- `GEMINI_KEY`
+- Optional: `GEMINI_FALLBACK_KEY` or `GEMINI_KEYS` for automatic backup keys
+- You can also use `GEMINI_API_KEY` / `GOOGLE_API_KEY`
 - `GEMINI_MODEL` (optional, defaults to `gemini-2.5-flash-lite`)
 
 3. Create tables in Supabase
@@ -59,10 +61,10 @@ npm run dev -- --open
 
 - Open the Stress Detection card
 - Click `Generate Gemini Plan`
-- The app calls a server endpoint that uses `GEMINI_KEY` privately
+- The app calls a server endpoint that uses your private Gemini key(s), trying a fallback key automatically if configured
 - If you hit free-tier rate limits often, use `gemini-2.5-flash-lite`
 
-6. Use Kelp Coach
+6. Use Oy Coach
 
 - Open `/app/coach` from the dashboard
 - Pick a persona: `Calm Coach`, `Tough Love`, or `Study Planner`

@@ -84,26 +84,10 @@
 	let isSigningIn = $state<OAuthProvider | null>(null);
 	let historyStatus = $state('');
 	let isLoadingHistory = $state(false);
-	let selectedDate = $state('');
 	let historySessions = $state<SensorSessionRecord[]>([]);
 
 	const displayName = $derived(getDisplayName(currentUser));
-	const availableDates = $derived(
-		Array.from(
-			new Set(
-				historySessions.map((session) => getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at))
-			)
-		).sort((a, b) => b.localeCompare(a))
-	);
-	const filteredSessions = $derived(
-		historySessions.filter((session) => {
-			if (!selectedDate) {
-				return true;
-			}
-
-			return getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate;
-		})
-	);
+	const filteredSessions = $derived(historySessions);
 	const sessionCards = $derived(filteredSessions.map(toSessionCard));
 	const averageHeartRate = $derived(averageMetric(sessionCards, 'avgHeartRate'));
 	const averageHrv = $derived(averageMetric(sessionCards, 'avgHrvMs'));
@@ -155,7 +139,6 @@
 				void loadHistorySessions(session.user.id);
 			} else {
 				historySessions = [];
-				selectedDate = '';
 			}
 		});
 
@@ -262,10 +245,6 @@
 			}
 
 			historySessions = (data ?? []) as SensorSessionRecord[];
-
-			if (selectedDate && !historySessions.some((session) => getSessionDateValue(session.summary_payload?.startedAt ?? session.started_at) === selectedDate)) {
-				selectedDate = '';
-			}
 		} catch (error) {
 			historyStatus = describeError(error, 'Failed to load history sessions.');
 		} finally {
@@ -417,29 +396,6 @@
 	<SiteNav />
 	<main class="history-page">
 		<section class="history-frame">
-			<header class="page-head">
-				<div>
-					<p class="eyebrow">History</p>
-					<h1>Session history for {displayName}</h1>
-					<p class="page-copy">Filter by session date and review clear summaries for heart rate, HRV, duration, and tracked activity.</p>
-				</div>
-
-				<div class="filter-card">
-					<label class="field">
-						<span class="field-label">Filter by date</span>
-						<select bind:value={selectedDate}>
-							<option value="">All sessions</option>
-							{#each availableDates as dateValue}
-								<option value={dateValue}>{formatDateLabel(dateValue)}</option>
-							{/each}
-						</select>
-					</label>
-					<p class="filter-copy">
-						{filteredSessions.length} session{filteredSessions.length === 1 ? '' : 's'} shown
-					</p>
-				</div>
-			</header>
-
 			<AppSectionNav />
 
 			{#if historyStatus}
@@ -654,7 +610,6 @@
 	.stat-card,
 	.chart-card,
 	.session-card,
-	.filter-card,
 	.empty-card {
 		background: var(--panel-bg);
 		border: 1px solid var(--panel-border);
@@ -677,8 +632,7 @@
 		color: var(--primary);
 	}
 
-	.auth-card h1,
-	.page-head h1 {
+	.auth-card h1 {
 		margin: 0.35rem 0 0;
 		line-height: 0.96;
 		letter-spacing: -0.04em;
@@ -692,9 +646,7 @@
 	.auth-copy,
 	.inline-hint,
 	.inline-status,
-	.page-copy,
 	.section-heading p,
-	.filter-copy,
 	.empty-card p {
 		margin: 0;
 		line-height: 1.55;
@@ -745,31 +697,6 @@
 		margin: 0 auto;
 	}
 
-	.page-head {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
-		gap: 1rem;
-		align-items: end;
-	}
-
-	.page-head h1 {
-		font-size: clamp(2.5rem, 5vw, 4.5rem);
-		color: var(--on-surface);
-		max-width: 40rem;
-	}
-
-	.filter-card {
-		padding: 1.2rem;
-		display: grid;
-		gap: 0.8rem;
-	}
-
-	.field {
-		display: grid;
-		gap: 0.45rem;
-	}
-
-	.field-label,
 	.metric-label,
 	.stat-label,
 	.bar-label,
@@ -780,16 +707,6 @@
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--on-surface-variant);
-	}
-
-	.field select {
-		width: 100%;
-		border: 1px solid var(--field-border);
-		border-radius: 1rem;
-		padding: 0.9rem 1rem;
-		font: inherit;
-		background: var(--field-bg);
-		color: var(--on-surface);
 	}
 
 	.overview-grid,
@@ -963,7 +880,6 @@
 	}
 
 	@media (max-width: 960px) {
-		.page-head,
 		.overview-grid,
 		.chart-grid {
 			grid-template-columns: 1fr;

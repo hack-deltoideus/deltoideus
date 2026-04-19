@@ -10,7 +10,8 @@ type GeminiOptions = {
 	model?: string;
 };
 
-type GeminiFallbackOptions = Omit<GeminiOptions, 'model'> & {
+type GeminiFallbackOptions = Omit<GeminiOptions, 'model' | 'apiKey'> & {
+	apiKeys: string[];
 	models: string[];
 };
 
@@ -28,6 +29,17 @@ type GeminiFailure = {
 };
 
 export type GeminiResult = GeminiSuccess | GeminiFailure;
+
+export function collectGeminiApiKeys(values: Array<string | undefined | null>): string[] {
+	return Array.from(
+		new Set(
+			values
+				.flatMap((value) => (value ?? '').split(','))
+				.map((value) => value.trim())
+				.filter(Boolean)
+		)
+	);
+}
 
 function extractGeminiError(data: unknown): string | null {
 	if (!data || typeof data !== 'object') {
@@ -139,44 +151,48 @@ export async function generateGeminiText({
 }
 
 export async function generateGeminiTextWithFallbacks({
-	apiKey,
+	apiKeys,
 	fetch,
 	prompt,
+	systemInstruction,
 	temperature,
 	maxOutputTokens,
 	models
 }: GeminiFallbackOptions): Promise<GeminiResult> {
 	let lastFailure: GeminiFailure | null = null;
 
-	for (const model of models) {
-		const result = await generateGeminiText({
-			apiKey,
-			fetch,
-			prompt,
-			temperature,
-			maxOutputTokens,
-			model
-		});
+	for (const apiKey of apiKeys) {
+		for (const model of models) {
+			const result = await generateGeminiText({
+				apiKey,
+				fetch,
+				prompt,
+				systemInstruction,
+				temperature,
+				maxOutputTokens,
+				model
+			});
 
-		if (result.ok) {
-			return result;
-		}
+			if (result.ok) {
+				return result;
+			}
 
-		lastFailure = result;
+			lastFailure = result;
 
-		const normalized = result.message.toLowerCase();
-		const shouldTryNextModel =
-			result.status === 429 ||
-			result.status === 500 ||
-			result.status === 503 ||
-			normalized.includes('quota') ||
-			normalized.includes('resource exhausted') ||
-			normalized.includes('rate limit') ||
-			normalized.includes('temporarily unavailable') ||
-			normalized.includes('high demand');
+			const normalized = result.message.toLowerCase();
+			const shouldTryNextModelOrKey =
+				result.status === 429 ||
+				result.status === 500 ||
+				result.status === 503 ||
+				normalized.includes('quota') ||
+				normalized.includes('resource exhausted') ||
+				normalized.includes('rate limit') ||
+				normalized.includes('temporarily unavailable') ||
+				normalized.includes('high demand');
 
-		if (!shouldTryNextModel) {
-			return result;
+			if (!shouldTryNextModelOrKey) {
+				return result;
+			}
 		}
 	}
 

@@ -68,16 +68,13 @@
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
 	let isSigningIn = $state<OAuthProvider | null>(null);
-	let isGeneratingPlan = $state(false);
-	let geminiPlan = $state('');
-	let geminiStatus = $state('');
-	let geminiSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
 	let helperSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
 	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+	let helperThread = $state<HTMLElement | null>(null);
 
 	let isConnecting = $state(false);
 	let isSavingSession = $state(false);
@@ -91,14 +88,6 @@
 	const levelLabel = $derived(
 		stressLevel === 'low' ? 'Low' : stressLevel === 'rising' ? 'Rising' : 'High'
 	);
-	const levelDescriptor = $derived(
-		stressLevel === 'low'
-			? 'Steady state'
-			: stressLevel === 'rising'
-				? 'Pressure building'
-				: 'Action recommended'
-	);
-	const streakDays = $derived(Math.max(1, Math.round((mood + sleepQuality) / 1.5)));
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
 
@@ -319,55 +308,13 @@
 		}
 	}
 
-	async function generateGeminiPlan() {
-		isGeneratingPlan = true;
-		geminiStatus = '';
-		geminiSource = '';
-
-		try {
-			const response = await fetch('/api/gemini-intervention', {
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressScore,
-					stressor
-				})
-			});
-
-			const payload = await response.json();
-			if (!response.ok) {
-				throw new Error(payload?.error ?? 'Failed to generate AI plan');
-			}
-
-			geminiPlan = payload.plan ?? '';
-			if (!geminiPlan) {
-				throw new Error('Gemini returned an empty plan.');
-			}
-
-			geminiSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			geminiStatus = payload?.warning ?? 'AI intervention generated.';
-		} catch (error) {
-			geminiStatus = describeError(error, 'Failed to generate plan.');
-		} finally {
-			isGeneratingPlan = false;
-		}
-	}
-
 	async function askGeminiHelper() {
 		helperStatus = '';
 		helperSource = '';
 
 		const question = helperQuestion.trim();
 		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
+			helperStatus = 'Add a question for Oy first.';
 			return;
 		}
 
@@ -387,14 +334,7 @@
 				body: JSON.stringify({
 					question,
 					persona: helperPersona,
-					history: helperHistory,
-					mood,
-					workload,
-					sleepQuality,
-					heartRate,
-					rrMs,
-					stressLevel,
-					stressor
+					history: helperHistory
 				})
 			});
 
@@ -405,18 +345,18 @@
 
 			const reply = payload.reply ?? '';
 			if (!reply) {
-				throw new Error('Kelp returned an empty response.');
+				throw new Error('Oy returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
 				...nextHistory,
 				{ role: 'assistant', text: reply }
 			];
-			helperHistory = updatedHistory.slice(-8);
+			helperHistory = updatedHistory.slice(-12);
 			helperQuestion = '';
-
+			void scrollHelperToBottom();
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
+			helperStatus = payload?.warning ?? 'Oy replied.';
 		} catch (error) {
 			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
@@ -426,6 +366,27 @@
 
 	function applyQuickPrompt(prompt: string) {
 		helperQuestion = prompt;
+	}
+
+	async function scrollHelperToBottom() {
+		if (!browser || !helperThread) {
+			return;
+		}
+
+		await Promise.resolve();
+		helperThread.scrollTo({
+			top: helperThread.scrollHeight,
+			behavior: 'smooth'
+		});
+	}
+
+	function handleHelperComposerKeydown(event: KeyboardEvent) {
+		if (event.key !== 'Enter' || event.shiftKey) {
+			return;
+		}
+
+		event.preventDefault();
+		void askGeminiHelper();
 	}
 </script>
 
@@ -476,7 +437,7 @@
 				<div class="avatar">{avatarLetter}</div>
 				<div>
 					<p class="profile-title">Good Morning</p>
-					<p class="profile-copy">{displayName} · {currentUser.email ?? 'Ready for your check-in?'}</p>
+					<p class="profile-copy">{displayName}</p>
 				</div>
 			</div>
 		</div>
@@ -512,23 +473,12 @@
 				<h1>Welcome back, {displayName}</h1>
 				<!-- <p class="hero-copy">Today is a beautiful day to nurture your mind.</p> -->
 			</div>
-
-			<div class="hero-streak kit-panel">
-				<div class="hero-streak-icon">
-					<span class="material-symbols-outlined streak-icon">celebration</span>
-				</div>
-				<div>
-					<p class="hero-streak-label">Daily Streak</p>
-					<p class="hero-streak-value">{streakDays} DAYS</p>
-				</div>
-			</div>
 		</section>
 
 		<section class="kit-grid">
 			<article class="stress-card kit-panel {levelClass}">
 				<div class="card-topline">
 					<p class="meta-label">Stress Detection</p>
-					<span class="material-symbols-outlined">waves</span>
 				</div>
 
 				<div class="score-row">
@@ -539,41 +489,12 @@
 				<div class="pill-row">
 					<p class="pill pill-primary">Level: {levelLabel}</p>
 				</div>
-
-				<div class="coach-box">
-					<p class="coach-title">Coach Suggestion</p>
-					<p class="coach-copy">{intervention}</p>
-					<p class="coach-caption">{levelDescriptor}</p>
-				</div>
-
-				<div class="status-group">
-					{#if geminiSource}
-						<p class="source-badge {geminiSource === 'fallback' ? 'fallback' : 'live'}">
-							{geminiSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-						</p>
-					{/if}
-
-					<button class="button button-ghost-on-dark" onclick={generateGeminiPlan} disabled={isGeneratingPlan}>
-						{isGeneratingPlan ? 'Generating AI Plan...' : 'Generate Gemini Plan'}
-					</button>
-				</div>
-
-				{#if geminiStatus}
-					<p class="inline-status on-dark">{geminiStatus}</p>
-				{/if}
-
-				{#if geminiPlan}
-					<pre class="output-panel">{geminiPlan}</pre>
-				{/if}
 			</article>
 
 			<article class="checkin-card kit-panel" id="checkin">
 				<div class="section-heading">
 					<div>
 						<h2>Daily Check-in</h2>
-					</div>
-					<div class="badge-icon accent-primary">
-						<span class="material-symbols-outlined filled-icon">favorite</span>
 					</div>
 				</div>
 
@@ -728,14 +649,14 @@
 				{/if}
 			</article>
 
-			<article class="helper-card kit-panel" id="kelp">
+			<article class="helper-card kit-panel" id="oy">
 				<div class="section-heading">
 					<div class="helper-heading">
 						<div class="badge-icon accent-tertiary">
 							<span class="material-symbols-outlined">smart_toy</span>
 						</div>
 						<div>
-							<h3>Ask Kelp</h3>
+							<h3>Ask Oy</h3>
 							<p class="helper-subtitle">Your AI Resilience Coach</p>
 						</div>
 					</div>
@@ -752,67 +673,69 @@
 
 				<RiveCharacter />
 
-				<div class="chat-shell">
+				<div class="chat-shell" bind:this={helperThread}>
 					{#if helperHistory.length > 0}
 						{#each helperHistory as msg}
 							<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
+								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
 								<p>{msg.text}</p>
 							</div>
 						{/each}
 					{:else}
 						<div class="chat-empty-state">
-							<p class="chat-empty-title">No messages yet.</p>
-							<p class="chat-empty-copy">Send a question when you want a quick plan, perspective, or reset.</p>
+							<p class="chat-empty-title">Start the conversation when you're ready.</p>
+							<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
+						</div>
+					{/if}
+
+					{#if isAskingHelper}
+						<div class="chat-bubble chat-bubble-status">
+							<p class="chat-author">Oy</p>
+							<p>Thinking through this...</p>
 						</div>
 					{/if}
 				</div>
 
-				<div class="prompt-row">
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Help me focus')}
-					>
-						&quot;Help me focus&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Log a victory')}
-					>
-						&quot;Log a victory&quot;
-					</button>
-					<button
-						class="prompt-chip"
-						type="button"
-						onclick={() => applyQuickPrompt('Quick breathwork')}
-					>
-						&quot;Quick breathwork&quot;
-					</button>
+				<div class="helper-composer">
+					<div class="prompt-row" aria-label="Suggested prompts">
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
+							Help me focus
+						</button>
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
+							Log a victory
+						</button>
+						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
+							Quick breathwork
+						</button>
+					</div>
+
+					<div class="message-row">
+						<textarea
+							class="message-input"
+							bind:value={helperQuestion}
+							placeholder="Message Oy..."
+							maxlength="700"
+							rows="3"
+							onkeydown={handleHelperComposerKeydown}
+						></textarea>
+						<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
+							<span class="material-symbols-outlined">send</span>
+						</button>
+					</div>
+
+					<div class="helper-meta">
+						<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
+						{#if helperSource}
+							<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
+								{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
+							</p>
+						{/if}
+					</div>
+
+					{#if helperStatus}
+						<p class="inline-status">{helperStatus}</p>
+					{/if}
 				</div>
-
-				<div class="message-row">
-					<input
-						class="message-input"
-						bind:value={helperQuestion}
-						placeholder="Type a message to Kelp..."
-						maxlength="700"
-					/>
-					<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-						<span class="material-symbols-outlined">send</span>
-					</button>
-				</div>
-
-				{#if helperSource}
-					<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-						{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-					</p>
-				{/if}
-
-				{#if helperStatus}
-					<p class="inline-status">{helperStatus}</p>
-				{/if}
 			</article>
 		</section>
 	</div>
@@ -822,7 +745,7 @@
 			<span class="material-symbols-outlined">dashboard</span>
 			<span>Dashboard</span>
 		</a>
-		<a class="footer-item" href="#kelp">
+		<a class="footer-item" href="#oy">
 			<span class="material-symbols-outlined">psychology</span>
 			<span>Coach</span>
 		</a>
@@ -1089,6 +1012,9 @@
 	.avatar {
 		width: 3rem;
 		height: 3rem;
+		min-width: 3rem;
+		min-height: 3rem;
+		flex: 0 0 3rem;
 		border-radius: 999px;
 		background: linear-gradient(135deg, var(--primary), var(--primary-container));
 		color: white;
