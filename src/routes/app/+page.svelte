@@ -18,19 +18,6 @@
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
-	type SavedCheckIn = {
-		id: string;
-		created_at: string;
-		mood: number;
-		workload: number;
-		sleep_quality: number;
-		stress_score: number;
-		stress_level: StressLevel;
-		heart_rate: number | null;
-		rr_ms: number | null;
-		stressor: string | null;
-	};
-
 	type SupabaseLikeError = {
 		message?: string;
 		details?: string;
@@ -50,11 +37,6 @@
 	const READING_IDLE_MS = 2000;
 	const TYPEWRITER_BASE_DELAY_MS = 9;
 
-	let mood = $state(5);
-	let workload = $state(5);
-	let sleepQuality = $state(5);
-	let stressor = $state('');
-
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
@@ -67,9 +49,6 @@
 	let diagnosisWindowSeconds = $state(30);
 	let rmssdThresholdDropPercent = $state(22);
 
-	let isSubmitting = $state(false);
-	let submitStatus = $state('');
-	let lastSavedCheckIn = $state<SavedCheckIn | null>(null);
 	let currentSession = $state<Session | null>(null);
 	let currentUser = $state<User | null>(null);
 	let authStatus = $state('');
@@ -367,72 +346,6 @@
 			hour: 'numeric',
 			minute: '2-digit'
 		});
-	}
-
-	async function submitCheckIn() {
-		submitStatus = '';
-		lastSavedCheckIn = null;
-
-		if (!supabase) {
-			submitStatus = 'Supabase is not configured yet. Add PUBLIC_SUPABASE_* values in .env.';
-			return;
-		}
-
-		if (!currentUser) {
-			submitStatus = 'Sign in first to save a check-in.';
-			return;
-		}
-
-		isSubmitting = true;
-
-		try {
-			const checkInPayload = {
-				mood,
-				workload,
-				sleep_quality: sleepQuality,
-				stress_score: stressScore,
-				stress_level: stressLevel,
-				heart_rate: heartRate,
-				rr_ms: rrMs,
-				stressor: stressor.trim() || null
-			};
-
-			const { data: savedCheckIn, error: checkInError } = await supabase
-				.from('check_ins')
-				.insert(checkInPayload)
-				.select(
-					'id, created_at, mood, workload, sleep_quality, stress_score, stress_level, heart_rate, rr_ms, stressor'
-				)
-				.single();
-
-			if (checkInError) {
-				throw checkInError;
-			}
-
-			if (!savedCheckIn) {
-				throw new Error('Check-in save succeeded, but the saved row was not returned.');
-			}
-
-			lastSavedCheckIn = savedCheckIn as SavedCheckIn;
-
-			if (stressLevel === 'rising' || stressLevel === 'high') {
-				const { error: interventionError } = await supabase.from('interventions').insert({
-					intervention_type: stressLevel === 'high' ? 'breathing_reset' : 'micro_break',
-					trigger_level: stressLevel,
-					notes: intervention
-				});
-
-				if (interventionError) {
-					throw interventionError;
-				}
-			}
-
-			submitStatus = `Check-in saved and verified in Supabase (id: ${savedCheckIn.id.slice(0, 8)}...).`;
-		} catch (error) {
-			submitStatus = describeError(error, 'Failed to save check-in');
-		} finally {
-			isSubmitting = false;
-		}
 	}
 
 	async function askGeminiHelper() {
@@ -753,97 +666,6 @@
 				</div>
 			</article>
 
-			<article class="checkin-card kit-panel" id="checkin">
-				<div class="section-heading">
-					<div>
-						<h2>Daily Check-in</h2>
-					</div>
-				</div>
-
-				<div class="slider-grid">
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-tertiary">sentiment_satisfied</span>
-							<span>Mood</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={mood} />
-						<span class="slider-scale">
-							<span>Gloomy</span>
-							<strong>{mood}</strong>
-							<span>Radiant</span>
-						</span>
-					</label>
-
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-secondary">work</span>
-							<span>Workload</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={workload} />
-						<span class="slider-scale">
-							<span>Light</span>
-							<strong>{workload}</strong>
-							<span>Heavy</span>
-						</span>
-					</label>
-
-					<label class="slider-card">
-						<span class="slider-title">
-							<span class="material-symbols-outlined accent-primary">bedtime</span>
-							<span>Sleep</span>
-						</span>
-						<input type="range" min="1" max="10" bind:value={sleepQuality} />
-						<span class="slider-scale">
-							<span>Restless</span>
-							<strong>{sleepQuality}</strong>
-							<span>Deep</span>
-						</span>
-					</label>
-				</div>
-
-				<label class="field">
-					<span class="field-label">Main stressor</span>
-					<input
-						bind:value={stressor}
-						placeholder="Exams, deadlines, social, sleep..."
-						maxlength="120"
-					/>
-				</label>
-
-				<div class="action-row">
-					<button class="button" onclick={submitCheckIn} disabled={isSubmitting || !hasSupabaseConfig}>
-						{isSubmitting ? 'Saving...' : 'Save Check-in'}
-					</button>
-				</div>
-
-				{#if !hasSupabaseConfig}
-					<p class="inline-hint">Set `PUBLIC_SUPABASE_URL` and `PUBLIC_SUPABASE_ANON_KEY` in `.env`.</p>
-				{/if}
-
-				{#if submitStatus}
-					<p class="inline-status">{submitStatus}</p>
-				{/if}
-
-				{#if lastSavedCheckIn}
-					<div class="saved-panel">
-						<p class="saved-title">Last saved check-in</p>
-						<div class="saved-metrics">
-							<span>{lastSavedCheckIn.stress_level.toUpperCase()}</span>
-							<span>Score {lastSavedCheckIn.stress_score}</span>
-							<span>Mood {lastSavedCheckIn.mood}</span>
-							<span>Workload {lastSavedCheckIn.workload}</span>
-							<span>Sleep {lastSavedCheckIn.sleep_quality}</span>
-						</div>
-						<p class="saved-copy">
-							Saved at {new Date(lastSavedCheckIn.created_at).toLocaleString()} with HR {lastSavedCheckIn.heart_rate ?? '--'} bpm and RR {lastSavedCheckIn.rr_ms ?? '--'} ms.
-						</p>
-						{#if lastSavedCheckIn.stressor}
-							<p class="saved-copy">Stressor: {lastSavedCheckIn.stressor}</p>
-						{/if}
-					</div>
-				{/if}
-			</article>
-
 			<article class="sensor-card kit-panel" id="sensor">
 				<div class="section-heading">
 					<div>
@@ -941,9 +763,6 @@
 			<article class="helper-card kit-panel" id="oy">
 				<div class="section-heading">
 					<div class="helper-heading">
-						<div class="badge-icon accent-tertiary">
-							<span class="material-symbols-outlined">smart_toy</span>
-						</div>
 						<div>
 							<h3>Ask Oy</h3>
 							<p class="helper-subtitle">Your AI Resilience Coach</p>
@@ -960,66 +779,68 @@
 					</label>
 				</div>
 
-				<RiveCharacter bind:this={character} />
+				<RiveCharacter bind:this={character} variant="stacked" />
 
-				<div class="chat-shell" bind:this={helperThread}>
-					{#if helperHistory.length > 0}
-						{#each helperHistory as msg}
-							<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-								<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
-								<p>{msg.text}</p>
+				<div class="helper-main">
+					<div class="chat-shell" bind:this={helperThread}>
+						{#if helperHistory.length > 0}
+							{#each helperHistory as msg}
+								<div class:chat-user={msg.role === 'user'} class="chat-bubble">
+									<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
+									<p>{msg.text}</p>
+								</div>
+							{/each}
+						{:else}
+							<div class="chat-empty-state">
+								<p class="chat-empty-title">Start the conversation when you're ready.</p>
+								<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
 							</div>
-						{/each}
-					{:else}
-						<div class="chat-empty-state">
-							<p class="chat-empty-title">Start the conversation when you're ready.</p>
-							<p class="chat-empty-copy">Ask for grounding, planning, focus help, or a quick reset.</p>
+						{/if}
+
+						{#if isAskingHelper}
+							<div class="chat-bubble chat-bubble-status">
+								<p class="chat-author">Oy</p>
+								<p>Thinking through this...</p>
+							</div>
+						{/if}
+					</div>
+
+					<div class="helper-composer">
+						<div class="prompt-row" aria-label="Suggested prompts">
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
+								Help me focus
+							</button>
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
+								Log a victory
+							</button>
+							<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
+								Quick breathwork
+							</button>
 						</div>
-					{/if}
 
-					{#if isAskingHelper}
-						<div class="chat-bubble chat-bubble-status">
-							<p class="chat-author">Oy</p>
-							<p>Thinking through this...</p>
+						<div class="message-row">
+							<textarea
+								class="message-input"
+								bind:value={helperQuestion}
+								placeholder="Message Oy..."
+								maxlength="700"
+								rows="1"
+								oninput={handleHelperInput}
+								onkeydown={handleHelperComposerKeydown}
+							></textarea>
+							<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
+								<span class="material-symbols-outlined">send</span>
+							</button>
 						</div>
-					{/if}
-				</div>
 
-				<div class="helper-composer">
-					<div class="prompt-row" aria-label="Suggested prompts">
-						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Help me focus')}>
-							Help me focus
-						</button>
-						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Log a victory')}>
-							Log a victory
-						</button>
-						<button class="prompt-chip" type="button" onclick={() => applyQuickPrompt('Quick breathwork')}>
-							Quick breathwork
-						</button>
+						<div class="helper-meta">
+							<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
+						</div>
+
+						{#if helperStatus}
+							<p class="inline-status">{helperStatus}</p>
+						{/if}
 					</div>
-
-					<div class="message-row">
-						<textarea
-							class="message-input"
-							bind:value={helperQuestion}
-							placeholder="Message Oy..."
-							maxlength="700"
-							rows="1"
-							oninput={handleHelperInput}
-							onkeydown={handleHelperComposerKeydown}
-						></textarea>
-						<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
-							<span class="material-symbols-outlined">send</span>
-						</button>
-					</div>
-
-					<div class="helper-meta">
-						<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
-					</div>
-
-					{#if helperStatus}
-						<p class="inline-status">{helperStatus}</p>
-					{/if}
 				</div>
 			</article>
 		</section>
@@ -1082,7 +903,6 @@
 		--panel-border: rgba(160, 174, 197, 0.3);
 		--hero-streak-bg: rgba(211, 228, 255, 0.72);
 		--nav-hover-bg: rgba(201, 222, 255, 0.7);
-		--checkin-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(234, 241, 255, 0.95));
 		--sensor-bg: rgba(255, 255, 255, 0.92);
 		--helper-bg: linear-gradient(180deg, rgba(201, 222, 255, 0.78), rgba(234, 241, 255, 0.96));
 		--card-surface: rgba(255, 255, 255, 0.8);
@@ -1126,7 +946,6 @@
 		--panel-border: rgba(92, 111, 127, 0.32);
 		--hero-streak-bg: rgba(18, 38, 54, 0.9);
 		--nav-hover-bg: rgba(27, 69, 95, 0.44);
-		--checkin-bg: linear-gradient(180deg, rgba(12, 27, 40, 0.96), rgba(16, 34, 49, 0.98));
 		--sensor-bg: rgba(12, 27, 40, 0.95);
 		--helper-bg: linear-gradient(180deg, rgba(21, 42, 60, 0.96), rgba(14, 31, 45, 0.98));
 		--card-surface: rgba(15, 34, 49, 0.92);
@@ -1440,33 +1259,35 @@
 	}
 
 	.stress-card,
-	.checkin-card,
 	.sensor-card,
 	.helper-card {
 		padding: 1.8rem;
 	}
 
 	.stress-card {
-		grid-column: span 4;
+		grid-column: span 6;
 		background: linear-gradient(180deg, var(--primary) 0%, #00594f 100%);
 		color: var(--on-primary);
 		border-color: rgba(91, 244, 222, 0.28);
 		box-shadow: 0 16px 34px rgba(0, 90, 80, 0.24);
-	}
-
-	.checkin-card {
-		grid-column: span 8;
-		background: var(--checkin-bg);
+		display: grid;
+		align-content: start;
 	}
 
 	.sensor-card {
-		grid-column: span 5;
+		grid-column: span 6;
 		background: var(--sensor-bg);
+		display: grid;
+		align-content: start;
 	}
 
 	.helper-card {
-		grid-column: span 7;
+		grid-column: 1 / -1;
 		background: var(--helper-bg);
+		display: grid;
+		grid-template-columns: minmax(14rem, 18rem) minmax(0, 1fr);
+		align-items: start;
+		gap: 1rem;
 	}
 
 	.card-topline,
@@ -1490,7 +1311,22 @@
 
 	.helper-heading {
 		align-items: center;
-		gap: 0.9rem;
+		flex: 1 1 16rem;
+		min-width: 0;
+	}
+
+	.helper-heading > div {
+		min-width: 0;
+	}
+
+	.helper-card > .section-heading {
+		grid-column: 1 / -1;
+	}
+
+	.helper-main {
+		display: grid;
+		gap: 1rem;
+		min-width: 0;
 	}
 
 	.section-heading h2,
@@ -1679,13 +1515,6 @@
 		color: #f3fffc;
 	}
 
-	.slider-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 1rem;
-		margin-top: 1.25rem;
-	}
-
 	.slider-card,
 	.metric-card {
 		display: grid;
@@ -1712,22 +1541,6 @@
 		color: var(--on-surface-variant);
 	}
 
-	.slider-scale strong {
-		font-size: 1rem;
-		color: var(--primary);
-	}
-
-	.field {
-		display: grid;
-		gap: 0.5rem;
-		margin-top: 1.1rem;
-	}
-
-	.field-label {
-		font-weight: 700;
-	}
-
-	.field input,
 	.persona-select select,
 	.message-input {
 		width: 100%;
@@ -1737,11 +1550,6 @@
 		font: inherit;
 		color: var(--on-surface);
 		background: var(--field-bg);
-	}
-
-	input[type='range'] {
-		width: 100%;
-		accent-color: var(--primary);
 	}
 
 	.action-row {
@@ -1991,10 +1799,9 @@
 		display: grid;
 		gap: 0.8rem;
 		padding: 1rem;
-		margin-top: 1rem;
 		border-radius: 1.6rem;
 		background: var(--chat-shell-bg);
-		min-height: 14rem;
+		min-height: 18rem;
 	}
 
 	.chat-bubble {
@@ -2057,7 +1864,6 @@
 		gap: 0.65rem;
 		overflow-x: auto;
 		padding-bottom: 0.15rem;
-		margin-top: 1rem;
 		scrollbar-width: none;
 	}
 
@@ -2078,7 +1884,6 @@
 
 	.message-row {
 		position: relative;
-		margin-top: 1rem;
 		display: flex;
 		align-items: center;
 		overflow: hidden;
@@ -2143,6 +1948,12 @@
 
 	.persona-select {
 		min-width: 12rem;
+		max-width: 100%;
+	}
+
+	.helper-composer {
+		display: grid;
+		gap: 1rem;
 	}
 
 	.icon-button {
@@ -2244,10 +2055,13 @@
 		}
 
 		.stress-card,
-		.checkin-card,
 		.sensor-card,
 		.helper-card {
 			grid-column: span 6;
+		}
+
+		.helper-card {
+			grid-template-columns: 1fr;
 		}
 
 		.mobile-footer {
@@ -2284,10 +2098,6 @@
 			font-size: clamp(2.4rem, 12vw, 3.6rem);
 		}
 
-		.slider-grid {
-			grid-template-columns: 1fr;
-		}
-
 		.metric-pair,
 		.inline-buttons,
 		.feedback-buttons,
@@ -2309,6 +2119,10 @@
 
 		.persona-select {
 			width: 100%;
+		}
+
+		.chat-shell {
+			min-height: 14rem;
 		}
 	}
 </style>
