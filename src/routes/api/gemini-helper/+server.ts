@@ -1,5 +1,5 @@
 import { env } from '$env/dynamic/private';
-import { collectGeminiApiKeys, generateGeminiTextWithFallbacks } from '$lib/server/gemini';
+import { generateOpenAIText } from '$lib/server/openai';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 type HelperRequestBody = {
@@ -67,7 +67,7 @@ function shouldUseFallback(result: { ok: false; status: number; message: string 
     normalized.includes('high demand') ||
     normalized.includes('rate limit') ||
     normalized.includes('rate-limited') ||
-    normalized.includes('resource exhausted') ||
+    normalized.includes('quota') ||
     normalized.includes('temporarily unavailable')
   );
 }
@@ -80,15 +80,15 @@ function buildFallbackWarning(result: { status: number; message: string; model: 
   if (
     result.status === 429 ||
     normalized.includes('quota exceeded') ||
-    normalized.includes('resource exhausted') ||
+    normalized.includes('quota') ||
     normalized.includes('rate limit')
   ) {
     return retrySeconds
-      ? `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
-      : `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+      ? `OpenAI is currently rate-limited for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
+      : `OpenAI is currently rate-limited for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
   }
 
-  return `Gemini is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+  return `OpenAI is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
 }
 
 function fallbackHelperReply(body: HelperRequestBody, question: string): string {
@@ -158,24 +158,16 @@ function fallbackHelperReply(body: HelperRequestBody, question: string): string 
 }
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
-  const apiKeys = collectGeminiApiKeys([
-    env.GEMINI_KEY,
-    env.GEMINI_FALLBACK_KEY,
-    env.GEMINI_KEYS,
-    env.GEMINI_API_KEY,
-    env.GOOGLE_API_KEY
-  ]);
-  if (apiKeys.length === 0) {
+  const apiKey = env.OPENAI_API_KEY ?? env.OPENAI_KEY ?? '';
+  if (!apiKey.trim()) {
     return json(
       {
-        error:
-          'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_FALLBACK_KEY, GEMINI_KEYS, GEMINI_API_KEY, or GOOGLE_API_KEY.'
+        error: 'Missing OpenAI API key on server. Set OPENAI_API_KEY or OPENAI_KEY.'
       },
       { status: 500 }
     );
   }
-  const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-  const models = Array.from(new Set([model, 'gemini-2.5-flash']));
+  const model = env.OPENAI_MODEL || 'gpt-4.1-mini';
 
   const body = (await request.json()) as HelperRequestBody;
   const question = body.question?.trim();
@@ -195,8 +187,10 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
   const recentHistory = (body.history ?? [])
     .filter((entry) => entry && (entry.role === 'user' || entry.role === 'assistant') && entry.text?.trim())
     .slice(-6)
-    .map((entry) => `- ${entry.role === 'user' ? 'Student' : 'Oy'}: ${entry.text.trim()}`)
-    .join('\n');
+    .map((entry) => ({
+      role: entry.role,
+      content: entry.text.trim()
+    }));
 
   const questionSpecificGuidance =
     questionType === 'identity'
@@ -239,7 +233,7 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     '- Repeating the same closing line across replies.'
   ].join('\n');
 
-  const prompt = [
+  const replyContext = [
     `Question type: ${questionType}`,
     '',
     'Current student state:',
@@ -253,20 +247,29 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     '',
     `Guidance for this reply: ${questionSpecificGuidance}`,
     '',
-    'Recent conversation:',
-    recentHistory || '- No prior conversation yet.',
-    '',
     `Student message: ${question}`
   ].join('\n');
 
-  const result = await generateGeminiTextWithFallbacks({
-    apiKeys,
+  const result = await generateOpenAIText({
+    apiKey,
     fetch,
-    prompt,
-    systemInstruction,
+    input: [
+      ...recentHistory,
+      {
+        role: 'developer',
+        content:
+          'Use the following student context for this turn. Treat it as current app state, not as user-authored text.\n\n' +
+          replyContext
+      },
+      {
+        role: 'user',
+        content: question
+      }
+    ],
+    instructions: systemInstruction,
     temperature: 0.6,
     maxOutputTokens: 700,
-    models
+    model
   });
 
   if (!result.ok && shouldUseFallback(result)) {
@@ -281,5 +284,5 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     return json({ error: `${result.message} (model: ${result.model})` }, { status: 502 });
   }
 
-  return json({ reply: result.text, source: 'gemini', model: result.model });
+  return json({ reply: result.text, source: 'openai', model: result.model });
 };

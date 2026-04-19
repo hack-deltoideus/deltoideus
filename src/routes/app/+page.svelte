@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import RiveCharacter from '$lib/components/RiveCharacter.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import {
@@ -9,7 +9,8 @@
 		endSharedSession,
 		sensorSession,
 		simulateSharedSpike,
-		startSharedSession
+		startSharedSession,
+		type DiagnosticSample
 	} from '$lib/sensor-session';
 	import { calculateStress, interventionFor, type StressLevel } from '$lib/stress';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
@@ -36,6 +37,15 @@
 	};
 
 	type OAuthProvider = 'google';
+	type ChatEntry = { role: 'user' | 'assistant'; text: string };
+	type CharacterController = {
+		setIdle: () => void;
+		setReading: () => void;
+		setTalking: () => void;
+	};
+
+	const READING_IDLE_MS = 2000;
+	const TYPEWRITER_BASE_DELAY_MS = 9;
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -44,6 +54,7 @@
 
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
+	let hrvMs = $state<number | undefined>(undefined);
 	let baselineHeartRate = $state(65);
 
 	const stressResult = $derived(
@@ -71,10 +82,14 @@
 	let helperQuestion = $state('');
 	let helperStatus = $state('');
 	let isAskingHelper = $state(false);
-	let helperSource = $state<'gemini' | 'fallback' | ''>('');
 	let helperPersona = $state<'calm-coach' | 'tough-love' | 'study-planner'>('calm-coach');
-	let helperHistory = $state<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+	let helperHistory = $state<Array<ChatEntry>>([]);
 	let helperThread = $state<HTMLElement | null>(null);
+	let character: CharacterController | null = $state(null);
+	let isReadingActive = $state(false);
+	let isReplyAnimating = $state(false);
+	let readingTimeout: ReturnType<typeof setTimeout> | null = null;
+	let replyAnimationToken = 0;
 
 	let isConnecting = $state(false);
 	let isSavingSession = $state(false);
@@ -82,7 +97,7 @@
 	let canUseBluetooth = $state(false);
 	let sensorStatus = $state('Disconnected');
 	let sessionStartedAt = $state<string | null>(null);
-	let sessionSamples = $state<Array<{ elapsed_ms: number }>>([]);
+	let sessionSamples = $state<DiagnosticSample[]>([]);
 
 	const levelClass = $derived(`level-${stressLevel}`);
 	const levelLabel = $derived(
@@ -95,6 +110,7 @@
 		const unsubscribeSensor = sensorSession.subscribe((state) => {
 			heartRate = state.heartRate;
 			rrMs = state.rrMs;
+			hrvMs = state.hrvMs;
 			isConnecting = state.isConnecting;
 			isSavingSession = state.isSavingSession;
 			isSensorConnected = state.isSensorConnected;
@@ -131,6 +147,11 @@
 			subscription.unsubscribe();
 			unsubscribeSensor();
 		};
+	});
+
+	onDestroy(() => {
+		clearReadingTimeout();
+		replyAnimationToken += 1;
 	});
 
 	function describeError(error: unknown, fallback: string): string {
@@ -310,7 +331,6 @@
 
 	async function askGeminiHelper() {
 		helperStatus = '';
-		helperSource = '';
 
 		const question = helperQuestion.trim();
 		if (!question) {
@@ -318,13 +338,18 @@
 			return;
 		}
 
+		stopReadingState();
 		isAskingHelper = true;
 
 		try {
-			const nextHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
+			const userMessage: ChatEntry = { role: 'user', text: question };
+			const nextHistory: Array<ChatEntry> = [
 				...helperHistory,
-				{ role: 'user', text: question }
-			];
+				userMessage
+			].slice(-11);
+			helperHistory = nextHistory;
+			helperQuestion = '';
+			void scrollHelperToBottom();
 
 			const response = await fetch('/api/gemini-helper', {
 				method: 'POST',
@@ -348,16 +373,12 @@
 				throw new Error('Oy returned an empty response.');
 			}
 
-			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
-				...nextHistory,
-				{ role: 'assistant', text: reply }
-			];
-			helperHistory = updatedHistory.slice(-12);
-			helperQuestion = '';
-			void scrollHelperToBottom();
-			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
+			isAskingHelper = false;
+			await typeAssistantReply(nextHistory, reply);
 			helperStatus = payload?.warning ?? 'Oy replied.';
 		} catch (error) {
+			isReplyAnimating = false;
+			syncCharacterState();
 			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
 			isAskingHelper = false;
@@ -366,6 +387,104 @@
 
 	function applyQuickPrompt(prompt: string) {
 		helperQuestion = prompt;
+	}
+
+	function clearReadingTimeout() {
+		if (readingTimeout !== null) {
+			clearTimeout(readingTimeout);
+			readingTimeout = null;
+		}
+	}
+
+	function syncCharacterState() {
+		if (isReplyAnimating) {
+			character?.setTalking();
+			return;
+		}
+
+		if (isReadingActive) {
+			character?.setReading();
+			return;
+		}
+
+		character?.setIdle();
+	}
+
+	function stopReadingState() {
+		clearReadingTimeout();
+		isReadingActive = false;
+		syncCharacterState();
+	}
+
+	function refreshReadingState() {
+		clearReadingTimeout();
+
+		if (!helperQuestion.trim()) {
+			isReadingActive = false;
+			syncCharacterState();
+			return;
+		}
+
+		isReadingActive = true;
+		syncCharacterState();
+		readingTimeout = setTimeout(() => {
+			isReadingActive = false;
+			syncCharacterState();
+		}, READING_IDLE_MS);
+	}
+
+	function getTypewriterDelay(character: string) {
+		if (/[.!?]/.test(character)) {
+			return TYPEWRITER_BASE_DELAY_MS * 6;
+		}
+
+		if (/[,\n;]/.test(character)) {
+			return TYPEWRITER_BASE_DELAY_MS * 3;
+		}
+
+		if (character === ' ') {
+			return TYPEWRITER_BASE_DELAY_MS;
+		}
+
+		return TYPEWRITER_BASE_DELAY_MS * 2;
+	}
+
+	function buildTypingTimeline(reply: string) {
+		const characters = Array.from(reply);
+		const delays = characters.map((character) => getTypewriterDelay(character));
+		const totalDurationMs = delays.reduce((sum, delay) => sum + delay, 0);
+		return { characters, delays, totalDurationMs };
+	}
+
+	async function typeAssistantReply(baseHistory: Array<ChatEntry>, reply: string) {
+		const token = ++replyAnimationToken;
+		const { characters, delays } = buildTypingTimeline(reply);
+		let visibleReply = '';
+
+		isReplyAnimating = true;
+		syncCharacterState();
+		helperHistory = [...baseHistory, { role: 'assistant', text: '' }];
+		await scrollHelperToBottom();
+
+		for (const [index, character] of characters.entries()) {
+			if (token !== replyAnimationToken) {
+				return;
+			}
+
+			visibleReply += character;
+			helperHistory = [...baseHistory, { role: 'assistant', text: visibleReply }];
+
+			if (index === characters.length - 1 || index % 4 === 0) {
+				void scrollHelperToBottom();
+			}
+
+			await new Promise((resolve) => {
+				setTimeout(resolve, delays[index] ?? TYPEWRITER_BASE_DELAY_MS);
+			});
+		}
+
+		isReplyAnimating = false;
+		syncCharacterState();
 	}
 
 	async function scrollHelperToBottom() {
@@ -378,6 +497,10 @@
 			top: helperThread.scrollHeight,
 			behavior: 'smooth'
 		});
+	}
+
+	function handleHelperInput() {
+		refreshReadingState();
 	}
 
 	function handleHelperComposerKeydown(event: KeyboardEvent) {
@@ -672,7 +795,7 @@
 					</label>
 				</div>
 
-				<RiveCharacter />
+				<RiveCharacter bind:this={character} />
 
 				<div class="chat-shell" bind:this={helperThread}>
 					{#if helperHistory.length > 0}
@@ -717,6 +840,7 @@
 							placeholder="Message Oy..."
 							maxlength="700"
 							rows="1"
+							oninput={handleHelperInput}
 							onkeydown={handleHelperComposerKeydown}
 						></textarea>
 						<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
@@ -726,11 +850,6 @@
 
 					<div class="helper-meta">
 						<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
-						{#if helperSource}
-							<p class="source-badge {helperSource === 'fallback' ? 'fallback' : 'live'}">
-								{helperSource === 'fallback' ? 'Fallback Mode' : 'Live Gemini'}
-							</p>
-						{/if}
 					</div>
 
 					{#if helperStatus}
@@ -1239,8 +1358,7 @@
 		margin: 1rem 0 1.2rem;
 	}
 
-	.pill,
-	.source-badge {
+	.pill {
 		display: inline-flex;
 		align-items: center;
 		padding: 0.45rem 0.8rem;
@@ -1277,6 +1395,34 @@
 	.coach-caption {
 		margin-top: 0.5rem;
 		opacity: 0.82;
+	}
+
+	.biofeedback-panel {
+		display: grid;
+		gap: 0.7rem;
+		margin-top: 1rem;
+		padding: 1rem;
+		border-radius: 1.4rem;
+		background: var(--saved-panel-bg);
+		border: 1px solid rgba(160, 174, 197, 0.24);
+	}
+
+	.biofeedback-topline {
+		display: flex;
+		align-items: start;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.biofeedback-copy,
+	.biofeedback-disclosure {
+		margin: 0;
+		line-height: 1.5;
+		color: var(--on-surface-variant);
+	}
+
+	.biofeedback-disclosure {
+		font-size: 0.82rem;
 	}
 
 	.status-group {
@@ -1679,22 +1825,6 @@
 		box-shadow: 0 10px 18px rgba(10, 118, 106, 0.22);
 	}
 
-	.source-badge {
-		width: fit-content;
-		margin-top: 0.9rem;
-		border: 1px solid rgba(160, 174, 197, 0.34);
-	}
-
-	.source-badge.live {
-		background: rgba(91, 244, 222, 0.16);
-		color: var(--primary);
-	}
-
-	.source-badge.fallback {
-		background: rgba(252, 192, 37, 0.18);
-		color: var(--on-tertiary-container);
-	}
-
 	.inline-status.on-dark {
 		color: rgba(255, 255, 255, 0.88);
 	}
@@ -1875,7 +2005,8 @@
 		.metric-pair,
 		.inline-buttons,
 		.section-heading,
-		.action-row {
+		.action-row,
+		.biofeedback-topline {
 			flex-direction: column;
 			align-items: stretch;
 		}
