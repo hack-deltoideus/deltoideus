@@ -1,7 +1,8 @@
 export type PolarReading = {
-  heartRate: number;
-  rrMs?: number;
-  hrvMs?: number;
+	heartRate: number;
+	rrMs?: number;
+	hrvMs?: number;
+	rrIntervalsMs?: number[];
 };
 
 const HEART_RATE_SERVICE = 0x180d;
@@ -20,14 +21,20 @@ export function parseHeartRateMeasurement(value: DataView): PolarReading {
     offset += 2;
   }
 
-  const hasRrInterval = (flags & 0x10) !== 0;
-  let rrMs: number | undefined;
-  if (hasRrInterval && value.byteLength >= offset + 2) {
-    const rrRaw = value.getUint16(offset, true);
-    rrMs = Math.round((rrRaw / 1024) * 1000);
-  }
+	const hasRrInterval = (flags & 0x10) !== 0;
+	let rrMs: number | undefined;
+	let rrIntervalsMs: number[] | undefined;
+	if (hasRrInterval && value.byteLength >= offset + 2) {
+		rrIntervalsMs = [];
+		while (offset + 1 < value.byteLength) {
+			const rrRaw = value.getUint16(offset, true);
+			rrIntervalsMs.push(Math.round((rrRaw / 1024) * 1000));
+			offset += 2;
+		}
+		rrMs = rrIntervalsMs.at(-1);
+	}
 
-  return { heartRate, rrMs };
+	return { heartRate, rrMs, rrIntervalsMs };
 }
 
 function calculateRmssd(rrHistory: number[]): number | undefined {
@@ -69,7 +76,7 @@ export async function connectHeartRateMonitor(
 
   const service = await server.getPrimaryService(HEART_RATE_SERVICE);
   const characteristic = await service.getCharacteristic(HEART_RATE_MEASUREMENT_CHARACTERISTIC);
-  const recentRrIntervals: number[] = [];
+	const recentRrIntervals: number[] = [];
 
   const handler = (event: Event) => {
     const target = event.target as BluetoothCharacteristicWithValue;
@@ -80,14 +87,14 @@ export async function connectHeartRateMonitor(
 
     const reading = parseHeartRateMeasurement(value);
 
-    if (typeof reading.rrMs === 'number') {
-      recentRrIntervals.push(reading.rrMs);
-      if (recentRrIntervals.length > 12) {
-        recentRrIntervals.shift();
-      }
+		if (reading.rrIntervalsMs?.length) {
+			recentRrIntervals.push(...reading.rrIntervalsMs);
+			while (recentRrIntervals.length > 30) {
+				recentRrIntervals.shift();
+			}
 
-      reading.hrvMs = calculateRmssd(recentRrIntervals);
-    }
+			reading.hrvMs = calculateRmssd(recentRrIntervals);
+		}
 
     onReading(reading);
   };

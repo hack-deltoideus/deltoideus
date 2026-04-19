@@ -9,6 +9,7 @@ export type DiagnosticSample = {
 	heart_rate: number;
 	rr_ms: number | null;
 	hrv_ms: number | null;
+	rr_intervals_ms?: number[];
 };
 
 export type SessionSegment = {
@@ -53,15 +54,29 @@ export type SavedDiagnosticSession = {
 		averageHrvMs: number | null;
 		lastHrvMs: number | null;
 		maxHeartRate: number | null;
+		baselineRmssdMs?: number | null;
+		rmssdDiagnosisWindowSeconds?: number;
+		baselineCaptureSeconds?: number;
+		stressThresholdDropPercent?: number;
 		segmentLengthSeconds: number;
 		segments: SessionSegment[];
 	} | null;
 };
 
+export type RmssdDiagnosis = 'building-baseline' | 'steady' | 'stressed' | 'recovering';
+
 type SensorSessionState = {
 	heartRate: number | undefined;
 	rrMs: number | undefined;
 	hrvMs: number | undefined;
+	baselineRmssdMs: number | undefined;
+	currentRmssdMs: number | undefined;
+	rmssdDeltaPercent: number | undefined;
+	rmssdDiagnosis: RmssdDiagnosis;
+	rmssdThresholdDropPercent: number;
+	baselineProgressPercent: number;
+	baselineCaptureSeconds: number;
+	diagnosisWindowSeconds: number;
 	isConnecting: boolean;
 	isSavingSession: boolean;
 	isSensorConnected: boolean;
@@ -81,6 +96,14 @@ const initialState: SensorSessionState = {
 	heartRate: undefined,
 	rrMs: undefined,
 	hrvMs: undefined,
+	baselineRmssdMs: undefined,
+	currentRmssdMs: undefined,
+	rmssdDeltaPercent: undefined,
+	rmssdDiagnosis: 'building-baseline',
+	rmssdThresholdDropPercent: 22,
+	baselineProgressPercent: 0,
+	baselineCaptureSeconds: 30,
+	diagnosisWindowSeconds: 30,
 	isConnecting: false,
 	isSavingSession: false,
 	isSensorConnected: false,
@@ -94,6 +117,9 @@ const initialState: SensorSessionState = {
 const store = writable<SensorSessionState>(initialState);
 let stopSensor: (() => Promise<void>) | null = null;
 
+const MIN_VALID_RR_MS = 300;
+const MAX_VALID_RR_MS = 2000;
+
 function patchState(patch: Partial<SensorSessionState>) {
 	store.update((state) => ({ ...state, ...patch }));
 }
@@ -104,6 +130,123 @@ function averageOf(values: number[]): number | null {
 	}
 
 	return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.max(min, Math.min(max, value));
+}
+
+function cleanRrIntervals(rrValues: number[]): number[] {
+	return rrValues.filter((value) => value >= MIN_VALID_RR_MS && value <= MAX_VALID_RR_MS);
+}
+
+function flattenRrIntervals(samples: DiagnosticSample[]): number[] {
+	const flattened: number[] = [];
+
+	for (const sample of samples) {
+		if (sample.rr_intervals_ms?.length) {
+			flattened.push(...sample.rr_intervals_ms);
+			continue;
+		}
+
+		if (typeof sample.rr_ms === 'number') {
+			flattened.push(sample.rr_ms);
+		}
+	}
+
+	return cleanRrIntervals(flattened);
+}
+
+function computeRmssd(rrValues: number[]): number | undefined {
+	const cleaned = cleanRrIntervals(rrValues);
+	if (cleaned.length < 3) {
+		return undefined;
+	}
+
+	let squaredDiffTotal = 0;
+	for (let index = 1; index < cleaned.length; index += 1) {
+		const diff = cleaned[index] - cleaned[index - 1];
+		squaredDiffTotal += diff * diff;
+	}
+
+	return Number(Math.sqrt(squaredDiffTotal / (cleaned.length - 1)).toFixed(2));
+}
+
+function samplesWithinWindow(
+	samples: DiagnosticSample[],
+	rangeStartMs: number,
+	rangeEndMs: number
+): DiagnosticSample[] {
+	return samples.filter(
+		(sample) => sample.elapsed_ms >= rangeStartMs && sample.elapsed_ms <= rangeEndMs
+	);
+}
+
+function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState> {
+	if (!state.sessionStartedAt || state.sessionSamples.length === 0) {
+		return {
+			hrvMs: undefined,
+			baselineRmssdMs: undefined,
+			currentRmssdMs: undefined,
+			rmssdDeltaPercent: undefined,
+			rmssdDiagnosis: 'building-baseline',
+			baselineProgressPercent: 0
+		};
+	}
+
+	const lastElapsedMs = state.sessionSamples.at(-1)?.elapsed_ms ?? 0;
+	const baselineWindowMs = state.baselineCaptureSeconds * 1000;
+	const diagnosisWindowMs = state.diagnosisWindowSeconds * 1000;
+	const baselineProgressPercent = clamp((lastElapsedMs / baselineWindowMs) * 100, 0, 100);
+
+	const baselineSamples = samplesWithinWindow(state.sessionSamples, 0, baselineWindowMs);
+	const baselineRmssdMs = computeRmssd(flattenRrIntervals(baselineSamples));
+
+	const currentWindowStartMs = Math.max(0, lastElapsedMs - diagnosisWindowMs);
+	const currentSamples = samplesWithinWindow(state.sessionSamples, currentWindowStartMs, lastElapsedMs);
+	const currentRmssdMs = computeRmssd(flattenRrIntervals(currentSamples));
+
+	if (baselineProgressPercent < 100 || typeof baselineRmssdMs !== 'number') {
+		return {
+			hrvMs: currentRmssdMs,
+			baselineRmssdMs: baselineRmssdMs,
+			currentRmssdMs,
+			rmssdDeltaPercent: undefined,
+			rmssdDiagnosis: 'building-baseline',
+			baselineProgressPercent: Number(baselineProgressPercent.toFixed(1))
+		};
+	}
+
+	if (typeof currentRmssdMs !== 'number') {
+		return {
+			hrvMs: undefined,
+			baselineRmssdMs,
+			currentRmssdMs: undefined,
+			rmssdDeltaPercent: undefined,
+			rmssdDiagnosis: 'steady',
+			baselineProgressPercent: 100
+		};
+	}
+
+	const rmssdDeltaPercent = Number(
+		(((currentRmssdMs - baselineRmssdMs) / baselineRmssdMs) * 100).toFixed(1)
+	);
+
+	let rmssdDiagnosis: RmssdDiagnosis = 'steady';
+	if (rmssdDeltaPercent <= -state.rmssdThresholdDropPercent) {
+		rmssdDiagnosis = 'stressed';
+	} else if (rmssdDeltaPercent >= 18) {
+		rmssdDiagnosis = 'recovering';
+	}
+
+	return {
+		hrvMs: currentRmssdMs,
+		baselineRmssdMs,
+		currentRmssdMs,
+		rmssdDeltaPercent,
+		rmssdDiagnosis,
+		baselineProgressPercent: 100
+	};
 }
 
 function chooseSegmentLengthSeconds(durationSeconds: number): number {
@@ -213,9 +356,12 @@ export async function connectSharedSensor() {
 							elapsed_ms: elapsedMs,
 							heart_rate: reading.heartRate,
 							rr_ms: reading.rrMs ?? null,
-							hrv_ms: reading.hrvMs ?? null
+							hrv_ms: reading.hrvMs ?? null,
+							rr_intervals_ms: reading.rrIntervalsMs ?? []
 						}
 					].slice(-600);
+
+					Object.assign(next, deriveRmssdState(next));
 				}
 
 				return next;
@@ -250,9 +396,59 @@ export function startSharedSession(isSignedIn: boolean) {
 	patchState({
 		sessionStartedAt: new Date().toISOString(),
 		sessionSamples: [],
+		baselineRmssdMs: undefined,
+		currentRmssdMs: undefined,
+		rmssdDeltaPercent: undefined,
+		rmssdDiagnosis: 'building-baseline',
+		baselineProgressPercent: 0,
 		sensorStatus: state.isSensorConnected
-			? 'Session started. Sensor data is now being recorded.'
+			? `Session started. Stay settled for ${state.baselineCaptureSeconds} seconds to capture your RMSSD baseline.`
 			: 'Session started. Connect a device or simulate readings to capture data.'
+	});
+}
+
+export function markSharedDetectionFeedback(feedback: 'stress' | 'normal') {
+	store.update((state) => {
+		if (!state.sessionStartedAt) {
+			return {
+				...state,
+				sensorStatus: 'Start a session first so feedback can tune the RMSSD threshold.'
+			};
+		}
+
+		const nextThreshold =
+			feedback === 'stress'
+				? clamp(state.rmssdThresholdDropPercent - 3, 10, 35)
+				: clamp(state.rmssdThresholdDropPercent + 3, 10, 35);
+
+		const nextState: SensorSessionState = {
+			...state,
+			rmssdThresholdDropPercent: nextThreshold,
+			sensorStatus:
+				feedback === 'stress'
+					? `Detection tuned to be more sensitive. RMSSD stress threshold is now ${nextThreshold}% below baseline.`
+					: `Detection tuned to be less sensitive. RMSSD stress threshold is now ${nextThreshold}% below baseline.`
+		};
+
+		return {
+			...nextState,
+			...deriveRmssdState(nextState)
+		};
+	});
+}
+
+export function resetSharedDetectionTuning() {
+	store.update((state) => {
+		const nextState: SensorSessionState = {
+			...state,
+			rmssdThresholdDropPercent: initialState.rmssdThresholdDropPercent,
+			sensorStatus: `RMSSD detection reset to the default ${initialState.rmssdThresholdDropPercent}% drop threshold.`
+		};
+
+		return {
+			...nextState,
+			...deriveRmssdState(nextState)
+		};
 	});
 }
 
@@ -335,6 +531,10 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 		averageHrvMs: averageOf(hrvValues),
 		lastHrvMs: hrvValues.at(-1) ?? null,
 		maxHeartRate: heartRates.length > 0 ? Math.max(...heartRates) : null,
+		baselineRmssdMs: state.baselineRmssdMs ?? null,
+		rmssdDiagnosisWindowSeconds: state.diagnosisWindowSeconds,
+		baselineCaptureSeconds: state.baselineCaptureSeconds,
+		stressThresholdDropPercent: state.rmssdThresholdDropPercent,
 		segmentLengthSeconds,
 		segments: buildSessionSegments(state.sessionSamples, state.sessionStartedAt, durationSeconds)
 	};
@@ -349,6 +549,10 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 		endedAt,
 		durationSeconds,
 		sampleCount: state.sessionSamples.length,
+		baselineRmssdMs: state.baselineRmssdMs ?? null,
+		rmssdDiagnosisWindowSeconds: state.diagnosisWindowSeconds,
+		baselineCaptureSeconds: state.baselineCaptureSeconds,
+		stressThresholdDropPercent: state.rmssdThresholdDropPercent,
 		readings: state.sessionSamples
 	};
 	const rawDataPath = `${userId}/${sessionId}.json`;
@@ -449,9 +653,12 @@ export function simulateSharedSpike() {
 					elapsed_ms: elapsedMs,
 					heart_rate: randomHr,
 					rr_ms: randomRr,
-					hrv_ms: randomHrv
+					hrv_ms: randomHrv,
+					rr_intervals_ms: [randomRr]
 				}
 			].slice(-600);
+
+			Object.assign(next, deriveRmssdState(next));
 		}
 
 		return next;
