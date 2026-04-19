@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
+	import { sensorSession } from '$lib/sensor-session';
 	import { onMount } from 'svelte';
 	import { supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -19,6 +20,7 @@
 	let authStatus = $state('');
 	let isSigningIn = $state(false);
 	let isSigningOut = $state(false);
+	let sessionStartedAt = $state<string | null>(null);
 	let themeMode = $state<ThemeMode>('light');
 
 	const pathname = $derived(page.url.pathname);
@@ -26,8 +28,13 @@
 	const showHome = $derived(currentUser !== null && pathname !== '/');
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
+	const showRecordingDot = $derived(Boolean(currentUser && sessionStartedAt));
 
 	onMount(() => {
+		const unsubscribeSensor = sensorSession.subscribe((state) => {
+			sessionStartedAt = state.sessionStartedAt;
+		});
+
 		if (browser) {
 			const storedTheme = window.localStorage.getItem('sanctuary-theme');
 			themeMode = storedTheme === 'dark' ? 'dark' : 'light';
@@ -35,7 +42,9 @@
 		}
 
 		if (!supabase) {
-			return;
+			return () => {
+				unsubscribeSensor();
+			};
 		}
 
 		void supabase.auth.getSession().then(({ data, error }) => {
@@ -57,6 +66,7 @@
 		});
 
 		return () => {
+			unsubscribeSensor();
 			subscription.unsubscribe();
 		};
 	});
@@ -196,6 +206,9 @@
 				<div class="user-chip" aria-label="Signed in user">
 					<span class="user-avatar">{avatarLetter}</span>
 					<span class="user-name">{displayName}</span>
+					{#if showRecordingDot}
+						<span class="recording-indicator" aria-label="Session recording" title="Session recording"></span>
+					{/if}
 				</div>
 			{:else}
 				<button class="site-button site-button-primary" type="button" onclick={signInWithGoogle} disabled={isSigningIn}>
@@ -303,6 +316,18 @@
 		font-weight: 700;
 	}
 
+	.recording-indicator {
+		width: 0.78rem;
+		height: 0.78rem;
+		border-radius: 999px;
+		background: #ff3048;
+		box-shadow:
+			0 0 0 0.26rem rgba(255, 48, 72, 0.22),
+			0 0 0.7rem rgba(255, 48, 72, 0.5);
+		animation: nav-recording-pulse 1s infinite;
+		flex: 0 0 auto;
+	}
+
 	.site-button {
 		border: 0;
 		border-radius: 999px;
@@ -387,6 +412,29 @@
 		.user-chip {
 			width: 100%;
 			justify-content: center;
+		}
+	}
+
+	@keyframes nav-recording-pulse {
+		0% {
+			opacity: 1;
+			box-shadow:
+				0 0 0 0 rgba(255, 48, 72, 0.45),
+				0 0 0.8rem rgba(255, 48, 72, 0.55);
+		}
+
+		55% {
+			opacity: 0.4;
+			box-shadow:
+				0 0 0 0.5rem rgba(255, 48, 72, 0),
+				0 0 0.15rem rgba(255, 48, 72, 0.18);
+		}
+
+		100% {
+			opacity: 1;
+			box-shadow:
+				0 0 0 0 rgba(255, 48, 72, 0),
+				0 0 0.8rem rgba(255, 48, 72, 0.55);
 		}
 	}
 </style>
