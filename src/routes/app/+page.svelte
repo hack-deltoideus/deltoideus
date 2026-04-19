@@ -35,7 +35,7 @@
 		code?: string;
 	};
 
-	type OAuthProvider = 'google' | 'github';
+	type OAuthProvider = 'google';
 
 	let mood = $state(5);
 	let workload = $state(5);
@@ -407,9 +407,6 @@
 				<div class="auth-actions">
 					<button class="button" onclick={() => signInWithProvider('google')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
 						{isSigningIn === 'google' ? 'Connecting Google...' : 'Continue with Google'}
-					</button>
-					<button class="button button-subtle" onclick={() => signInWithProvider('github')} disabled={isSigningIn !== null || !hasSupabaseConfig}>
-						{isSigningIn === 'github' ? 'Connecting GitHub...' : 'Continue with GitHub'}
 					</button>
 				</div>
 
