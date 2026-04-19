@@ -1,8 +1,8 @@
 import { env } from '$env/dynamic/private';
-import { collectGeminiApiKeys, generateGeminiTextWithFallbacks } from '$lib/server/gemini';
+import { generateOpenAIText } from '$lib/server/openai';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
-type GeminiRequestBody = {
+type InterventionRequestBody = {
   mood?: number;
   workload?: number;
   sleepQuality?: number;
@@ -23,7 +23,7 @@ function shouldUseFallback(result: { ok: false; status: number; message: string 
     normalized.includes('high demand') ||
     normalized.includes('rate limit') ||
     normalized.includes('rate-limited') ||
-    normalized.includes('resource exhausted') ||
+    normalized.includes('quota') ||
     normalized.includes('temporarily unavailable')
   );
 }
@@ -36,18 +36,18 @@ function buildFallbackWarning(result: { status: number; message: string; model: 
   if (
     result.status === 429 ||
     normalized.includes('quota exceeded') ||
-    normalized.includes('resource exhausted') ||
+    normalized.includes('quota') ||
     normalized.includes('rate limit')
   ) {
     return retrySeconds
-      ? `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
-      : `Gemini quota is currently exhausted for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+      ? `OpenAI is currently rate-limited for the configured API key, so Sanctuary is showing the local fallback ${label} instead. Try again in about ${retrySeconds} seconds. (${result.model})`
+      : `OpenAI is currently rate-limited for the configured API key, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
   }
 
-  return `Gemini is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
+  return `OpenAI is temporarily unavailable, so Sanctuary is showing the local fallback ${label} instead. (${result.model})`;
 }
 
-function fallbackInterventionPlan(body: GeminiRequestBody): string {
+function fallbackInterventionPlan(body: InterventionRequestBody): string {
   const high = body.stressLevel === 'high' || (body.stressScore ?? 0) >= 70;
 
   return [
@@ -61,35 +61,30 @@ function fallbackInterventionPlan(body: GeminiRequestBody): string {
 }
 
 export const POST: RequestHandler = async ({ request, fetch }) => {
-  const apiKeys = collectGeminiApiKeys([
-    env.GEMINI_KEY,
-    env.GEMINI_FALLBACK_KEY,
-    env.GEMINI_KEYS,
-    env.GEMINI_API_KEY,
-    env.GOOGLE_API_KEY
-  ]);
-  if (apiKeys.length === 0) {
+  const apiKey = env.OPENAI_API_KEY ?? env.OPENAI_KEY ?? '';
+  if (!apiKey.trim()) {
     return json(
       {
-        error:
-          'Missing Gemini API key on server. Set GEMINI_KEY, GEMINI_FALLBACK_KEY, GEMINI_KEYS, GEMINI_API_KEY, or GOOGLE_API_KEY.'
+        error: 'Missing OpenAI API key on server. Set OPENAI_API_KEY or OPENAI_KEY.'
       },
       { status: 500 }
     );
   }
-  const model = env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-  const models = Array.from(new Set([model, 'gemini-2.5-flash']));
+  const model = env.OPENAI_MODEL || 'gpt-4.1-mini';
 
-  const body = (await request.json()) as GeminiRequestBody;
+  const body = (await request.json()) as InterventionRequestBody;
 
-  const prompt = [
-    'You are a calm student stress coach for a hackathon MVP.',
-    'Return only a practical action plan in 4 bullets.',
+  const instructions = [
+    'You are Oy, the AI coach inside Sanctuary.',
+    'Return only a practical action plan in exactly 4 bullets.',
     'Each bullet must be practical and take less than 5 minutes.',
     'Include one breathing step, one immediate workload step, one physical reset, and one follow-up check.',
     'Keep the total answer under 140 words.',
-    '',
-    'Current state:',
+    'Use plain language and avoid medical claims.'
+  ].join('\n');
+
+  const input = [
+    'Student state for this intervention:',
     `- Mood: ${body.mood ?? 'n/a'}/10`,
     `- Workload: ${body.workload ?? 'n/a'}/10`,
     `- Sleep quality: ${body.sleepQuality ?? 'n/a'}/10`,
@@ -100,13 +95,14 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     `- Main stressor: ${body.stressor?.trim() || 'n/a'}`
   ].join('\n');
 
-  const result = await generateGeminiTextWithFallbacks({
-    apiKeys,
+  const result = await generateOpenAIText({
+    apiKey,
     fetch,
-    prompt,
+    input,
+    instructions,
     temperature: 0.4,
     maxOutputTokens: 420,
-    models
+    model
   });
 
   if (!result.ok && shouldUseFallback(result)) {
@@ -121,5 +117,5 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
     return json({ error: `${result.message} (model: ${result.model})` }, { status: 502 });
   }
 
-  return json({ plan: result.text, source: 'gemini', model: result.model });
+  return json({ plan: result.text, source: 'openai', model: result.model });
 };

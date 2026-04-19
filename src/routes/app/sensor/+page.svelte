@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import HeartWaveform from '$lib/components/HeartWaveform.svelte';
+	import SensorSessionSummaryModal from '$lib/components/SensorSessionSummaryModal.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import {
 		connectSharedSensor,
@@ -48,11 +49,13 @@
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
 	let showEntryAlert = $state(false);
+	let showSessionSummaryModal = $state(false);
 	let activePanel = $state<'ecg' | 'sessions'>('ecg');
 	let waveformSessionKey = $state(0);
 	let nowMs = $state(Date.now());
 	let lastReadingAtMs = $state<number | null>(null);
 	let lastKnownConnectionState = false;
+	let summarySession = $state<SavedDiagnosticSession | null>(null);
 
 	const displayName = $derived(getDisplayName(currentUser));
 	const selectedDiagnosticSession = $derived(
@@ -278,6 +281,8 @@
 	function startSession() {
 		startSharedSession(Boolean(currentUser));
 		lastSavedDiagnosticSession = null;
+		summarySession = null;
+		showSessionSummaryModal = false;
 	}
 
 	async function endSession() {
@@ -285,12 +290,18 @@
 		diagnosticStatus = result.warning;
 		if (result.savedSession) {
 			lastSavedDiagnosticSession = result.savedSession;
+			summarySession = result.savedSession;
+			showSessionSummaryModal = true;
 			diagnosticSessions = [
 				result.savedSession,
 				...diagnosticSessions.filter((session) => session.id !== result.savedSession?.id)
 			];
 			selectedDiagnosticSessionId = result.savedSession.id;
 		}
+	}
+
+	function closeSessionSummaryModal() {
+		showSessionSummaryModal = false;
 	}
 
 	async function disconnectSensor() {
@@ -680,6 +691,13 @@
 			</div>
 		</div>
 	{/if}
+
+	<SensorSessionSummaryModal
+		open={showSessionSummaryModal}
+		session={summarySession}
+		displayName={displayName}
+		onClose={closeSessionSummaryModal}
+	/>
 {/if}
 
 <style>

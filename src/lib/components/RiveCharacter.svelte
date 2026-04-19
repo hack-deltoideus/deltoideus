@@ -2,7 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import otterRiv from '../../assets/otter_boy.riv?url';
 
-	type Variant = 'card' | 'hero' | 'stacked';
+	type Variant = 'card' | 'hero' | 'stacked' | 'spotlight';
 	let { variant = 'card' }: { variant?: Variant } = $props();
 
 	type RiveModule = typeof import('@rive-app/canvas');
@@ -14,6 +14,8 @@
 	const VIEW_MODEL = 'ViewModel1';
 	const VIEW_MODEL_INSTANCE = 'Instance';
 	const CLICK_TRIGGER = 'on_click';
+	const TALKING_BOOLEAN = 'isTalking';
+	const READING_BOOLEAN = 'isReading';
 
 	let canvas: HTMLCanvasElement;
 	let host: HTMLDivElement;
@@ -36,6 +38,32 @@
 
 	function fireOnClick() {
 		viewModelInstance?.trigger(CLICK_TRIGGER)?.trigger();
+	}
+
+	function setBooleanState(name: string, value: boolean) {
+		const property = viewModelInstance?.boolean(name);
+		if (property) {
+			property.value = value;
+		}
+	}
+
+	export function triggerClick() {
+		fireOnClick();
+	}
+
+	export function setIdle() {
+		setBooleanState(TALKING_BOOLEAN, false);
+		setBooleanState(READING_BOOLEAN, false);
+	}
+
+	export function setTalking() {
+		setBooleanState(READING_BOOLEAN, false);
+		setBooleanState(TALKING_BOOLEAN, true);
+	}
+
+	export function setReading() {
+		setBooleanState(TALKING_BOOLEAN, false);
+		setBooleanState(READING_BOOLEAN, true);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -104,7 +132,12 @@
 	});
 </script>
 
-<div class:rive-card={variant === 'card' || variant === 'stacked'} class:rive-hero={variant === 'hero'} class:rive-stacked={variant === 'stacked'}>
+<div
+	class:rive-card={variant === 'card' || variant === 'stacked'}
+	class:rive-hero={variant === 'hero'}
+	class:rive-stacked={variant === 'stacked'}
+	class:rive-spotlight={variant === 'spotlight'}
+>
 	<div
 		bind:this={host}
 		class="rive-shell"
@@ -202,6 +235,16 @@
 
 	.rive-stacked .rive-copy {
 		order: -1;
+	}
+
+	.rive-spotlight {
+		display: block;
+	}
+
+	.rive-spotlight .rive-shell {
+		width: min(100%, 28rem);
+		background: transparent;
+		box-shadow: none;
 	}
 
 	.rive-hero-status {

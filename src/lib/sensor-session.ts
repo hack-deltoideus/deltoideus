@@ -22,6 +22,26 @@ export type SessionSegment = {
 	averageHrvMs: number | null;
 };
 
+export type SessionSummaryPayload = {
+	sessionId: string;
+	userId: string;
+	deviceInfo: {
+		name: string;
+	} | null;
+	captureType: string;
+	startedAt: string;
+	endedAt: string;
+	durationSeconds: number;
+	sampleCount: number;
+	averageHeartRate: number | null;
+	averageRrMs: number | null;
+	averageHrvMs: number | null;
+	lastHrvMs: number | null;
+	maxHeartRate: number | null;
+	segmentLengthSeconds: number;
+	segments: SessionSegment[];
+};
+
 export type SavedDiagnosticSession = {
 	id: string;
 	created_at: string;
@@ -37,25 +57,7 @@ export type SavedDiagnosticSession = {
 	device_name: string | null;
 	capture_type: string | null;
 	raw_data_path: string | null;
-	summary_payload: {
-		sessionId: string;
-		userId: string;
-		deviceInfo: {
-			name: string;
-		} | null;
-		captureType: string;
-		startedAt: string;
-		endedAt: string;
-		durationSeconds: number;
-		sampleCount: number;
-		averageHeartRate: number | null;
-		averageRrMs: number | null;
-		averageHrvMs: number | null;
-		lastHrvMs: number | null;
-		maxHeartRate: number | null;
-		segmentLengthSeconds: number;
-		segments: SessionSegment[];
-	} | null;
+	summary_payload: SessionSummaryPayload | null;
 };
 
 type SensorSessionState = {
