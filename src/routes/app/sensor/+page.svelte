@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import HeartWaveform from '$lib/components/HeartWaveform.svelte';
@@ -374,9 +375,10 @@
 		showEntryAlert = false;
 	}
 
-	function takeBreak() {
+	async function takeBreak() {
 		sensorStatus = 'Break mode suggested. Step away, hydrate, and take a short reset.';
 		showEntryAlert = false;
+		await goto('/app/recovery');
 	}
 </script>
 
