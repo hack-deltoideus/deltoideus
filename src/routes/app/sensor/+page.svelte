@@ -46,7 +46,7 @@
 	let selectedDiagnosticSessionId = $state<string | null>(null);
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
-	let showEntryAlert = $state(true);
+	let showEntryAlert = $state(false);
 
 	const displayName = $derived(getDisplayName(currentUser));
 	const selectedDiagnosticSession = $derived(
@@ -322,19 +322,6 @@
 {:else}
 	<SiteNav />
 	<main class="page-shell">
-		<section class="hero">
-			<div>
-				<p class="eyebrow">Live Data</p>
-				<h1>Sensor stream for {displayName}</h1>
-				<p class="hero-copy">Live sensor controls and saved sessions live together here, without squeezing the diagnostics view into a side strip.</p>
-			</div>
-			<div class="hero-card">
-				<p class="hero-card-label">Monitor State</p>
-				<p class="hero-card-value">{isSensorConnected ? 'LIVE' : 'IDLE'}</p>
-				<p class="hero-card-copy">{sensorStatus}</p>
-			</div>
-		</section>
-
 		<AppSectionNav />
 
 		<section class="grid">
@@ -628,7 +615,6 @@
 	}
 
 	.auth-panel,
-	.hero-card,
 	.sensor-card,
 	.data-card {
 		background: var(--panel-bg);
@@ -643,17 +629,9 @@
 		padding: 2rem;
 	}
 
-	.hero {
-		display: grid;
-		grid-template-columns: minmax(0, 1.3fr) minmax(18rem, 0.8fr);
-		gap: 1.2rem;
-		padding-top: 0.5rem;
-	}
-
 	.eyebrow,
 	.metric-label,
-	.saved-title,
-	.hero-card-label {
+	.saved-title {
 		margin: 0 0 0.45rem;
 		font-size: 0.78rem;
 		font-weight: 800;
@@ -689,28 +667,9 @@
 		line-height: 1.65;
 	}
 
-	.hero-card,
 	.sensor-card,
 	.data-card {
 		padding: 1.45rem;
-	}
-
-	.hero-card {
-		display: grid;
-		align-content: center;
-		gap: 0.55rem;
-	}
-
-	.hero-card-value {
-		margin: 0;
-		font-size: clamp(2.2rem, 5vw, 3.8rem);
-		font-weight: 800;
-		letter-spacing: -0.05em;
-	}
-
-	.hero-card-copy {
-		margin: 0;
-		line-height: 1.6;
 	}
 
 	.grid {
@@ -1013,7 +972,6 @@
 	}
 
 	@media (max-width: 1180px) {
-		.hero,
 		.grid {
 			grid-template-columns: 1fr;
 		}
@@ -1033,7 +991,6 @@
 		}
 
 		.auth-panel,
-		.hero-card,
 		.sensor-card,
 		.data-card {
 			padding: 1.2rem;

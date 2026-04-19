@@ -150,7 +150,7 @@
 
 		const question = helperQuestion.trim();
 		if (!question) {
-			helperStatus = 'Add a question for Kelp first.';
+			helperStatus = 'Add a question for Oy first.';
 			return;
 		}
 
@@ -181,7 +181,7 @@
 
 			const reply = payload.reply ?? '';
 			if (!reply) {
-				throw new Error('Kelp returned an empty response.');
+				throw new Error('Oy returned an empty response.');
 			}
 
 			const updatedHistory: Array<{ role: 'user' | 'assistant'; text: string }> = [
@@ -192,7 +192,7 @@
 			helperQuestion = '';
 			void scrollHelperToBottom();
 			helperSource = payload?.source === 'fallback' ? 'fallback' : 'gemini';
-			helperStatus = payload?.warning ?? 'Kelp replied.';
+			helperStatus = payload?.warning ?? 'Oy replied.';
 		} catch (error) {
 			helperStatus = describeError(error, 'Failed to ask helper.');
 		} finally {
@@ -215,17 +215,17 @@
 </script>
 
 <svelte:head>
-	<title>Sanctuary | Kelp Coach</title>
+	<title>Sanctuary | Oy Coach</title>
 </svelte:head>
 
 {#if !currentUser}
 	<SiteNav />
 	<main class="auth-shell">
 		<section class="auth-card">
-			<p class="eyebrow">Kelp Coach</p>
+			<p class="eyebrow">Oy Coach</p>
 			<h1>Sign in to open your dedicated coaching space.</h1>
 			<p class="auth-copy">
-				Kelp works best when it can stay with your conversation, so this screen is reserved for your signed-in session.
+				Oy works best when it can stay with your conversation, so this screen is reserved for your signed-in session.
 			</p>
 
 			<div class="auth-actions">
@@ -247,25 +247,12 @@
 {:else}
 	<SiteNav />
 	<main class="coach-shell">
-		<section class="coach-hero">
-			<div>
-				<p class="eyebrow">AI Coach</p>
-				<h1>Kelp, in a dedicated workspace</h1>
-				<p class="hero-copy">
-					Ask for grounding, planning, or perspective. The thread stays readable while the composer stays anchored.
-				</p>
-			</div>
-			<div class="hero-actions">
-				<a class="button button-subtle" href="/app">Back to dashboard</a>
-			</div>
-		</section>
-
 		<AppSectionNav />
 
 		<section class="coach-panel">
 			<div class="coach-header">
 				<div>
-					<h2>Ask Kelp</h2>
+					<h2>Ask Oy</h2>
 					<p class="coach-subtitle">Support for {displayName}, one step at a time.</p>
 				</div>
 
@@ -283,7 +270,7 @@
 				{#if helperHistory.length > 0}
 					{#each helperHistory as msg}
 						<div class:chat-user={msg.role === 'user'} class="chat-bubble">
-							<p class="chat-author">{msg.role === 'user' ? 'You' : 'Kelp'}</p>
+							<p class="chat-author">{msg.role === 'user' ? 'You' : 'Oy'}</p>
 							<p>{msg.text}</p>
 						</div>
 					{/each}
@@ -296,7 +283,7 @@
 
 				{#if isAskingHelper}
 					<div class="chat-bubble chat-bubble-status">
-						<p class="chat-author">Kelp</p>
+						<p class="chat-author">Oy</p>
 						<p>Thinking through this...</p>
 					</div>
 				{/if}
@@ -319,7 +306,7 @@
 					<textarea
 						class="message-input"
 						bind:value={helperQuestion}
-						placeholder="Message Kelp..."
+						placeholder="Message Oy..."
 						maxlength="700"
 						rows="3"
 						onkeydown={handleHelperComposerKeydown}
@@ -454,8 +441,7 @@
 		color: var(--on-surface-variant);
 	}
 
-	.auth-card h1,
-	.coach-hero h1 {
+	.auth-card h1 {
 		margin: 0;
 		font-size: clamp(2.8rem, 5.8vw, 4.6rem);
 		line-height: 0.98;
@@ -465,14 +451,12 @@
 	}
 
 	.auth-copy,
-	.hero-copy,
 	.coach-subtitle,
 	.composer-hint {
 		color: var(--on-surface-variant);
 	}
 
-	.auth-copy,
-	.hero-copy {
+	.auth-copy {
 		margin-top: 0.95rem;
 		font-size: 1.1rem;
 		line-height: 1.68;
@@ -518,14 +502,6 @@
 	.button-subtle {
 		background: var(--secondary-container);
 		color: var(--on-surface);
-	}
-
-	.coach-hero {
-		display: flex;
-		align-items: end;
-		justify-content: space-between;
-		gap: 1.4rem;
-		padding: 0.8rem 0.1rem 1.35rem;
 	}
 
 	.coach-panel {
@@ -730,15 +706,6 @@
 		.coach-shell,
 		.auth-shell {
 			padding-inline: 1rem;
-		}
-
-		.coach-hero {
-			flex-direction: column;
-			align-items: start;
-		}
-
-		.coach-hero h1 {
-			max-width: none;
 		}
 
 		.coach-panel {
