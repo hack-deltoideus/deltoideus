@@ -57,6 +57,31 @@ Set these values in `.env`:
 npm run dev -- --open
 ```
 
+## Deploy on Render
+
+1. Push `main` to GitHub
+2. In Render, create a new `Web Service` from this repo
+3. Render can use the included [render.yaml](/Users/emperor/kelp/deltoideus/render.yaml), or these manual settings:
+
+```bash
+Build Command: npm install && npm run build
+Start Command: npm run start
+```
+
+4. Add these environment variables in Render:
+
+- `PUBLIC_SUPABASE_URL`
+- `PUBLIC_SUPABASE_ANON_KEY`
+- `GEMINI_KEY`
+- Optional: `GEMINI_FALLBACK_KEY`
+- Optional: `GEMINI_KEYS`
+- Optional: `GEMINI_MODEL`
+
+5. In Supabase Auth, add your Render domain to allowed redirect URLs, including:
+
+- `https://YOUR_RENDER_SERVICE.onrender.com`
+- `https://YOUR_RENDER_SERVICE.onrender.com/app`
+
 5. Use AI intervention
 
 - Open the Stress Detection card
