@@ -25,6 +25,10 @@
 		<span class="material-symbols-outlined">monitor_heart</span>
 		<span>Live Data</span>
 	</a>
+	<a class:active={isActive('/app/ecg')} class="section-link" href="/app/ecg">
+		<span class="material-symbols-outlined">ecg_heart</span>
+		<span>ECG</span>
+	</a>
 	<a class:active={isActive('/app/coach')} class="section-link" href="/app/coach">
 		<span class="material-symbols-outlined">psychology</span>
 		<span>AI Coach</span>

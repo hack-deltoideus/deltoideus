@@ -3,6 +3,8 @@
 	import { onMount } from 'svelte';
 	import AppSectionNav from '$lib/components/AppSectionNav.svelte';
 	import SiteNav from '$lib/components/SiteNav.svelte';
+	import { publishLiveEcgReading } from '$lib/live-ecg-stream';
+	import { connectHeartRateMonitor } from '$lib/polar';
 	import {
 		connectSharedSensor,
 		disconnectSharedSensor,
@@ -254,6 +256,35 @@
 		await connectSharedSensor();
 	}
 
+		try {
+			const startedAt = new Date().toISOString();
+			sessionStartedAt = startedAt;
+			sessionSamples = [];
+			lastSavedDiagnosticSession = null;
+
+			stopSensor = await connectHeartRateMonitor((reading) => {
+				heartRate = reading.heartRate;
+				rrMs = reading.rrMs;
+				hrvMs = reading.hrvMs;
+				publishLiveEcgReading({
+					heartRate: reading.heartRate,
+					rrMs: reading.rrMs ?? Math.round(60000 / Math.max(reading.heartRate, 1)),
+					receivedAtMs: Date.now()
+				});
+
+				const recordedAt = new Date().toISOString();
+				const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(startedAt).getTime());
+				sessionSamples = [
+					...sessionSamples,
+					{
+						recorded_at: recordedAt,
+						elapsed_ms: elapsedMs,
+						heart_rate: reading.heartRate,
+						rr_ms: reading.rrMs ?? null,
+						hrv_ms: reading.hrvMs ?? null
+					}
+				].slice(-600);
+			});
 	function startSession() {
 		startSharedSession(Boolean(currentUser));
 		lastSavedDiagnosticSession = null;
@@ -335,6 +366,34 @@
 		}
 	}
 
+	function simulateSpike() {
+		const randomHr = 95 + Math.floor(Math.random() * 26);
+		const randomRr = 520 + Math.floor(Math.random() * 120);
+		const randomHrv = 18 + Math.floor(Math.random() * 28);
+
+		heartRate = randomHr;
+		rrMs = randomRr;
+		hrvMs = randomHrv;
+		publishLiveEcgReading({
+			heartRate: randomHr,
+			rrMs: randomRr,
+			receivedAtMs: Date.now()
+		});
+
+		if (sessionStartedAt) {
+			const recordedAt = new Date().toISOString();
+			const elapsedMs = Math.max(0, new Date(recordedAt).getTime() - new Date(sessionStartedAt).getTime());
+			sessionSamples = [
+				...sessionSamples,
+				{
+					recorded_at: recordedAt,
+					elapsed_ms: elapsedMs,
+					heart_rate: randomHr,
+					rr_ms: randomRr,
+					hrv_ms: randomHrv
+				}
+			].slice(-600);
+		}
 	function acknowledgeAlert() {
 		showEntryAlert = false;
 	}
