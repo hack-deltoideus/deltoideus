@@ -190,7 +190,7 @@
 				{#if showHome}
 					<a class="site-button site-button-secondary" href="/">Home</a>
 				{/if}
-				<button class="site-button site-button-ghost" type="button" onclick={signOut} disabled={isSigningOut}>
+				<button class="site-button site-button-secondary" type="button" onclick={signOut} disabled={isSigningOut}>
 					{isSigningOut ? 'Signing out...' : 'Sign out'}
 				</button>
 				<div class="user-chip" aria-label="Signed in user">
@@ -343,12 +343,6 @@
 		color: var(--on-surface, #1f2937);
 	}
 
-	.site-button-ghost {
-		background: transparent;
-		color: var(--on-surface-variant, #4e5c71);
-		border: 1px solid color-mix(in srgb, var(--outline-variant, #cbd5e1) 78%, transparent);
-	}
-
 	.site-status {
 		max-width: 82rem;
 		margin: 0.5rem auto 0;
@@ -385,8 +379,7 @@
 		}
 
 		.site-button,
-		.site-button-secondary,
-		.site-button-ghost {
+		.site-button-secondary {
 			flex: 1 1 10rem;
 			text-align: center;
 		}

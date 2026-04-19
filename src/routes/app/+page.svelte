@@ -715,7 +715,7 @@
 							bind:value={helperQuestion}
 							placeholder="Message Oy..."
 							maxlength="700"
-							rows="3"
+							rows="1"
 							onkeydown={handleHelperComposerKeydown}
 						></textarea>
 						<button class="send-button" onclick={askGeminiHelper} disabled={isAskingHelper} aria-label="Send message">
@@ -1599,12 +1599,19 @@
 
 	.prompt-row {
 		display: flex;
-		flex-wrap: wrap;
 		gap: 0.65rem;
+		overflow-x: auto;
+		padding-bottom: 0.15rem;
 		margin-top: 1rem;
+		scrollbar-width: none;
+	}
+
+	.prompt-row::-webkit-scrollbar {
+		display: none;
 	}
 
 	.prompt-chip {
+		flex: 0 0 auto;
 		padding: 0.7rem 0.95rem;
 		border-radius: 999px;
 		background: var(--prompt-chip-bg);
@@ -1617,25 +1624,32 @@
 	.message-row {
 		position: relative;
 		margin-top: 1rem;
+		display: flex;
+		align-items: center;
+		overflow: hidden;
+		border-radius: 1.35rem;
 	}
 
 	.message-input {
-		padding-right: 4.2rem;
-		border-radius: 1.3rem;
+		min-height: 2.85rem;
+		padding: 0.55rem 6.35rem 0.55rem 1rem;
+		border-radius: 1.35rem;
+		line-height: 1.55;
+		resize: none;
 	}
 
 	.send-button {
 		position: absolute;
-		top: 0.55rem;
-		right: 0.55rem;
+		top: 0.45rem;
+		right: 0.45rem;
+		bottom: 0.45rem;
 		display: grid;
 		place-items: center;
-		width: 2.75rem;
-		height: 2.75rem;
-		border-radius: 0.95rem;
+		width: 4.15rem;
+		border-radius: 1rem;
 		background: var(--primary);
 		color: white;
-		box-shadow: 0 2px 0 rgba(0, 77, 69, 0.25);
+		box-shadow: 0 10px 18px rgba(10, 118, 106, 0.22);
 	}
 
 	.source-badge {

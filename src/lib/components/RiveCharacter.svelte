@@ -3,7 +3,7 @@
 	import riveCanvas from '@rive-app/canvas';
 	import otterRiv from '../../assets/otter_boy.riv?url';
 
-	type Variant = 'card' | 'hero';
+	type Variant = 'card' | 'hero' | 'stacked';
 	let { variant = 'card' }: { variant?: Variant } = $props();
 
 	type RiveInstance = InstanceType<(typeof riveCanvas)['Rive']>;
@@ -90,7 +90,7 @@
 	});
 </script>
 
-<div class:rive-card={variant === 'card'} class:rive-hero={variant === 'hero'}>
+<div class:rive-card={variant === 'card' || variant === 'stacked'} class:rive-hero={variant === 'hero'} class:rive-stacked={variant === 'stacked'}>
 	<div
 		bind:this={host}
 		class="rive-shell"
@@ -182,6 +182,14 @@
 		gap: 0.35rem;
 	}
 
+	.rive-stacked {
+		grid-template-columns: 1fr;
+	}
+
+	.rive-stacked .rive-copy {
+		order: -1;
+	}
+
 	.rive-hero-status {
 		position: absolute;
 		left: 50%;
@@ -223,6 +231,16 @@
 	@media (max-width: 720px) {
 		.rive-card {
 			grid-template-columns: 1fr;
+		}
+	}
+
+	@media (max-width: 980px) {
+		.rive-card {
+			grid-template-columns: 1fr;
+		}
+
+		.rive-copy {
+			order: -1;
 		}
 	}
 </style>
