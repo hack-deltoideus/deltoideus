@@ -149,7 +149,7 @@
 		<canvas bind:this={canvas} class="rive-canvas" width={500} height={369}></canvas>
 	</div>
 
-	{#if variant === 'card'}
+	{#if variant === 'card' || variant === 'stacked'}
 		<div class="rive-copy">
 			<p class="rive-title">Tap Oy</p>
 			<p class="rive-subtitle">
