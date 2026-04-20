@@ -60,7 +60,6 @@
 	let selectedDiagnosticSessionId = $state<string | null>(null);
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
-	let showEntryAlert = $state(false);
 	let showSessionSummaryModal = $state(false);
 	let activePanel = $state<'ecg' | 'sessions'>('ecg');
 	let waveformSessionKey = $state(0);
@@ -130,7 +129,6 @@
 			currentSession = data.session;
 			currentUser = data.session?.user ?? null;
 			if (data.session?.user) {
-				showEntryAlert = true;
 				void loadDiagnosticSessions(data.session.user.id);
 			}
 		});
@@ -141,12 +139,10 @@
 			currentSession = session;
 			currentUser = session?.user ?? null;
 			if (session?.user) {
-				showEntryAlert = true;
 				void loadDiagnosticSessions(session.user.id);
 			} else {
 				diagnosticSessions = [];
 				selectedDiagnosticSessionId = null;
-				showEntryAlert = false;
 			}
 		});
 
@@ -442,15 +438,6 @@
 		}
 	}
 
-	function acknowledgeAlert() {
-		showEntryAlert = false;
-	}
-
-	async function takeBreak() {
-		sensorStatus = 'Break mode suggested. Step away, hydrate, and take a short reset.';
-		showEntryAlert = false;
-		await goto('/app/recovery');
-	}
 </script>
 
 <svelte:head>
@@ -808,28 +795,6 @@
 			</article>
 		</section>
 	</main>
-
-	{#if showEntryAlert}
-		<div class="alert-overlay">
-			<div class="alert-modal">
-				<div class="alert-icon-wrap">
-					<span class="material-symbols-outlined alert-icon">error</span>
-				</div>
-				<h2>Critical Insight</h2>
-				<p>
-					Your heart rate indicates you have reached <strong>cognitive decline</strong>. It&apos;s
-					time to pause and reset.
-				</p>
-				<div class="alert-actions">
-					<button class="button alert-primary" onclick={takeBreak}>Take a break</button>
-					<button class="button button-subtle alert-secondary" onclick={acknowledgeAlert}>
-						Acknowledge
-					</button>
-				</div>
-				<p class="alert-footnote">Safety protocols active</p>
-			</div>
-		</div>
-	{/if}
 
 	<SensorSessionSummaryModal
 		open={showSessionSummaryModal}
@@ -1466,90 +1431,6 @@
 		margin: 0.2rem 0 0;
 		font-size: clamp(1.3rem, 2vw, 1.8rem);
 		line-height: 1.05;
-	}
-
-	.alert-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 100;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 1.5rem;
-		background: rgba(1, 15, 32, 0.34);
-		backdrop-filter: blur(14px);
-	}
-
-	.alert-modal {
-		width: min(100%, 22rem);
-		padding: 2rem 1.6rem 1.5rem;
-		border-radius: 2rem;
-		background: rgba(255, 255, 255, 0.96);
-		border: 1px solid rgba(179, 27, 37, 0.08);
-		box-shadow: 0 28px 60px rgba(31, 47, 82, 0.22);
-		text-align: center;
-	}
-
-	.alert-icon-wrap {
-		width: 4.6rem;
-		height: 4.6rem;
-		margin: 0 auto 1.1rem;
-		display: grid;
-		place-items: center;
-		border-radius: 999px;
-		background: rgba(251, 81, 81, 0.18);
-	}
-
-	.alert-icon {
-		font-size: 2.8rem;
-		color: var(--error, #b31b25);
-		font-variation-settings:
-			'FILL' 1,
-			'wght' 500,
-			'GRAD' 0,
-			'opsz' 24;
-	}
-
-	.alert-modal h2 {
-		margin: 0;
-		font-size: 1.55rem;
-		line-height: 1;
-		letter-spacing: -0.04em;
-		color: var(--on-surface);
-	}
-
-	.alert-modal p {
-		margin: 0.9rem 0 0;
-		line-height: 1.65;
-		color: var(--on-surface-variant);
-	}
-
-	.alert-modal strong {
-		color: var(--error, #b31b25);
-	}
-
-	.alert-actions {
-		display: grid;
-		gap: 0.8rem;
-		margin-top: 1.35rem;
-	}
-
-	.alert-primary,
-	.alert-secondary {
-		width: 100%;
-		border-radius: 999px;
-	}
-
-	.alert-secondary {
-		background: rgba(183, 211, 255, 0.72);
-	}
-
-	.alert-footnote {
-		font-size: 0.72rem;
-		font-weight: 800;
-		letter-spacing: 0.14em;
-		text-transform: uppercase;
-		color: var(--outline, #6a788d);
 	}
 
 	@media (max-width: 1180px) {

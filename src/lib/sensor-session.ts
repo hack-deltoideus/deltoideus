@@ -75,6 +75,7 @@ type SensorSessionState = {
 	currentRmssdMs: number | undefined;
 	rmssdDeltaPercent: number | undefined;
 	rmssdDiagnosis: RmssdDiagnosis;
+	overallStressScore: number;
 	rmssdThresholdDropPercent: number;
 	baselineProgressPercent: number;
 	baselineCaptureSeconds: number;
@@ -102,6 +103,7 @@ const initialState: SensorSessionState = {
 	currentRmssdMs: undefined,
 	rmssdDeltaPercent: undefined,
 	rmssdDiagnosis: 'building-baseline',
+	overallStressScore: 0,
 	rmssdThresholdDropPercent: 22,
 	baselineProgressPercent: 0,
 	baselineCaptureSeconds: 30,
@@ -184,6 +186,21 @@ function samplesWithinWindow(
 	);
 }
 
+function computeOverallStressScore(
+	rmssdDiagnosis: RmssdDiagnosis,
+	rmssdDeltaPercent: number | undefined
+): number {
+	if (rmssdDiagnosis === 'building-baseline' || typeof rmssdDeltaPercent !== 'number') {
+		return 0;
+	}
+
+	if (rmssdDiagnosis === 'recovering') {
+		return 10;
+	}
+
+	return Math.max(0, Math.min(100, Math.round(-rmssdDeltaPercent)));
+}
+
 function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState> {
 	if (!state.sessionStartedAt || state.sessionSamples.length === 0) {
 		return {
@@ -192,6 +209,7 @@ function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState
 			currentRmssdMs: undefined,
 			rmssdDeltaPercent: undefined,
 			rmssdDiagnosis: 'building-baseline',
+			overallStressScore: 0,
 			baselineProgressPercent: 0
 		};
 	}
@@ -215,6 +233,7 @@ function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState
 			currentRmssdMs,
 			rmssdDeltaPercent: undefined,
 			rmssdDiagnosis: 'building-baseline',
+			overallStressScore: 0,
 			baselineProgressPercent: Number(baselineProgressPercent.toFixed(1))
 		};
 	}
@@ -226,6 +245,7 @@ function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState
 			currentRmssdMs: undefined,
 			rmssdDeltaPercent: undefined,
 			rmssdDiagnosis: 'steady',
+			overallStressScore: 0,
 			baselineProgressPercent: 100
 		};
 	}
@@ -241,12 +261,15 @@ function deriveRmssdState(state: SensorSessionState): Partial<SensorSessionState
 		rmssdDiagnosis = 'recovering';
 	}
 
+	const overallStressScore = computeOverallStressScore(rmssdDiagnosis, rmssdDeltaPercent);
+
 	return {
 		hrvMs: currentRmssdMs,
 		baselineRmssdMs,
 		currentRmssdMs,
 		rmssdDeltaPercent,
 		rmssdDiagnosis,
+		overallStressScore,
 		baselineProgressPercent: 100
 	};
 }
@@ -402,6 +425,7 @@ export function startSharedSession(isSignedIn: boolean) {
 		currentRmssdMs: undefined,
 		rmssdDeltaPercent: undefined,
 		rmssdDiagnosis: 'building-baseline',
+		overallStressScore: 0,
 		baselineProgressPercent: 0,
 		sensorStatus: state.isSensorConnected
 			? `Session started. Stay settled for ${state.baselineCaptureSeconds} seconds to capture your RMSSD baseline.`
@@ -488,6 +512,7 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 			sensorStatus: 'Session ended. Supabase is not configured, so diagnostics were not saved.',
 			sessionStartedAt: null,
 			sessionSamples: [],
+			overallStressScore: 0,
 			isSavingSession: false
 		});
 		return { savedSession: null, warning: '' };
@@ -498,6 +523,7 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 			sensorStatus: 'Session ended. Sign in to save diagnostics.',
 			sessionStartedAt: null,
 			sessionSamples: [],
+			overallStressScore: 0,
 			isSavingSession: false
 		});
 		return { savedSession: null, warning: '' };
@@ -610,6 +636,7 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 				: `Session ended and saved (${data.id.slice(0, 8)}...).`,
 			sessionStartedAt: null,
 			sessionSamples: [],
+			overallStressScore: 0,
 			isSavingSession: false
 		});
 
@@ -622,6 +649,7 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 			sensorStatus: describeError(error, 'Session ended, but failed to save diagnostics.'),
 			sessionStartedAt: null,
 			sessionSamples: [],
+			overallStressScore: 0,
 			isSavingSession: false
 		});
 		return { savedSession: null, warning: '' };
