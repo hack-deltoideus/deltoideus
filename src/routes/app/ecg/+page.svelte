@@ -9,17 +9,27 @@
 		subscribeLiveEcgReadings,
 		type LiveEcgReading
 	} from '$lib/live-ecg-stream';
-	import { connectHeartRateMonitor } from '$lib/polar';
+	import { connectHeartRateMonitor, connectPolarEcgStream } from '$lib/polar';
+	import { RespiratoryRateEstimator, type RespiratoryRateEstimate } from '$lib/respiration';
 	let waveformSessionKey = $state(0);
 	let nowMs = $state(Date.now());
 	let lastReadingAtMs = $state<number | null>(null);
 	let latestHeartRate = $state<number | null>(null);
 	let latestRrMs = $state<number | null>(null);
+	let latestEcgMicrovolts = $state<number | null>(null);
+	let rawEcgPacketCount = $state(0);
+	let rawEcgSampleCount = $state(0);
+	let latestEcgFrameType = $state<number | null>(null);
+	let latestEcgTimestampNs = $state('');
+	let rawEcgLogs = $state<string[]>([]);
+	let rawEcgSamples = $state<number[]>([]);
+	let respiratoryEstimate = $state<RespiratoryRateEstimate | null>(null);
 	let canUseBluetooth = $state(false);
 	let isConnecting = $state(false);
 	let isSensorConnected = $state(false);
 	let sensorStatus = $state('No live device connected.');
 	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	const respiratoryEstimator = new RespiratoryRateEstimator();
 
 	const signalIsLive = $derived(lastReadingAtMs !== null && nowMs - lastReadingAtMs < 2500);
 	const signalLabel = $derived(signalIsLive ? 'LIVE' : 'IDLE');
@@ -29,9 +39,16 @@
 			: 'Monitor is on live standby and will react as soon as a compatible device starts sending data.'
 	);
 	const connectionLabel = $derived(isSensorConnected ? 'CONNECTED' : 'STANDBY');
+	const connectDisabledReason = $derived(getConnectDisabledReason());
+	const rawEcgPath = $derived(buildRawEcgPath(rawEcgSamples));
 
 	onMount(() => {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
+		if (!canUseBluetooth) {
+			sensorStatus =
+				'Web Bluetooth is not available here. Open this page in Chrome or Edge on localhost, and make sure Bluetooth is enabled for the browser.';
+		}
+
 		const clock = window.setInterval(() => {
 			nowMs = Date.now();
 		}, 250);
@@ -85,6 +102,59 @@
 		}
 	}
 
+	async function connectRawEcgDevice() {
+		if (!canUseBluetooth || isConnecting || isSensorConnected) {
+			return;
+		}
+
+		isConnecting = true;
+		sensorStatus = 'Connecting to Polar PMD ECG stream...';
+		rawEcgPacketCount = 0;
+		rawEcgSampleCount = 0;
+		latestEcgMicrovolts = null;
+		latestEcgFrameType = null;
+		latestEcgTimestampNs = '';
+		rawEcgLogs = [];
+		rawEcgSamples = [];
+		respiratoryEstimate = null;
+		respiratoryEstimator.reset();
+
+		try {
+			stopSensor = await connectPolarEcgStream((packet) => {
+				const packetSamples = packet.samples.map((sample) => sample.microvolts);
+				rawEcgPacketCount += 1;
+				rawEcgSampleCount += packet.samples.length;
+				latestEcgMicrovolts = packet.samples.at(-1)?.microvolts ?? latestEcgMicrovolts;
+				latestEcgFrameType = packet.frameType;
+				latestEcgTimestampNs = packet.timestampNs.toString();
+				lastReadingAtMs = Date.now();
+				rawEcgSamples = [...rawEcgSamples, ...packetSamples].slice(-520);
+				respiratoryEstimate = respiratoryEstimator.addSamples(packetSamples);
+				rawEcgLogs = [
+					`Packet ${rawEcgPacketCount}: ${packet.samples.length} samples, latest ${latestEcgMicrovolts ?? '--'} uV, frame ${packet.frameType}`,
+					...rawEcgLogs
+				].slice(0, 8);
+
+				console.log('Polar ECG packet', {
+					frameType: packet.frameType,
+					timestampNs: packet.timestampNs.toString(),
+					sampleCount: packet.samples.length,
+					firstSample: packet.samples[0],
+					lastSample: packet.samples.at(-1),
+					rawBytes: packet.rawBytes
+				});
+			});
+
+			isSensorConnected = true;
+			waveformSessionKey += 1;
+			sensorStatus = 'Connected. Raw ECG packets are decoding below and logging to the browser console.';
+		} catch (error) {
+			sensorStatus = error instanceof Error ? error.message : 'Could not connect to Polar ECG stream.';
+		} finally {
+			isConnecting = false;
+		}
+	}
+
 	async function disconnectDevice() {
 		if (!stopSensor) {
 			return;
@@ -94,6 +164,45 @@
 		stopSensor = null;
 		isSensorConnected = false;
 		sensorStatus = 'Disconnected. ECG monitor is back to flatline standby.';
+	}
+
+	function getConnectDisabledReason(): string {
+		if (!canUseBluetooth) {
+			return 'Web Bluetooth unavailable. Use Chrome or Edge on http://127.0.0.1 or HTTPS, with Bluetooth enabled.';
+		}
+
+		if (isConnecting) {
+			return 'Connection is already in progress.';
+		}
+
+		if (isSensorConnected) {
+			return 'A device is already connected. Disconnect before switching modes.';
+		}
+
+		return '';
+	}
+
+	function buildRawEcgPath(samples: number[]): string {
+		if (samples.length < 2) {
+			return '';
+		}
+
+		const width = 720;
+		const height = 220;
+		const padding = 16;
+		const visibleHeight = height - padding * 2;
+		const min = Math.min(...samples);
+		const max = Math.max(...samples);
+		const range = Math.max(max - min, 1);
+
+		return samples
+			.map((sample, index) => {
+				const x = (index / (samples.length - 1)) * width;
+				const normalized = (sample - min) / range;
+				const y = padding + (1 - normalized) * visibleHeight;
+				return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+			})
+			.join(' ');
 	}
 </script>
 
@@ -152,9 +261,21 @@
 				type="button"
 				onclick={connectDevice}
 				disabled={!canUseBluetooth || isConnecting || isSensorConnected}
+				title={connectDisabledReason}
 			>
 				<span class="material-symbols-outlined">bluetooth</span>
 				<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
+			</button>
+
+			<button
+				class="button"
+				type="button"
+				onclick={connectRawEcgDevice}
+				disabled={!canUseBluetooth || isConnecting || isSensorConnected}
+				title={connectDisabledReason}
+			>
+				<span class="material-symbols-outlined">ecg_heart</span>
+				<span>{isConnecting ? 'Connecting...' : 'Connect Raw ECG'}</span>
 			</button>
 
 			<button
@@ -168,6 +289,55 @@
 		</div>
 
 		<p class="section-copy status-copy">{sensorStatus}</p>
+		{#if connectDisabledReason}
+			<p class="section-copy status-copy">{connectDisabledReason}</p>
+		{/if}
+
+		<div class="raw-ecg-panel">
+			<p class="metric-label">RAW ECG PMD</p>
+			<div class="raw-ecg-grid">
+				<span>{rawEcgPacketCount} packets</span>
+				<span>{rawEcgSampleCount} samples</span>
+				<span>{latestEcgMicrovolts ?? '--'} uV</span>
+				<span>Frame {latestEcgFrameType ?? '--'}</span>
+			</div>
+			<p class="section-copy raw-ecg-copy">
+				Latest timestamp {latestEcgTimestampNs || '--'}
+			</p>
+			<div class="respiration-panel">
+				<div>
+					<p class="metric-label">RESPIRATORY RATE ESTIMATE</p>
+					<p class="respiration-value">
+						{respiratoryEstimate?.breathsPerMinute ?? '--'}<span> breaths/min</span>
+					</p>
+				</div>
+				<div class="respiration-meta">
+					<span>Confidence {respiratoryEstimate ? Math.round(respiratoryEstimate.confidence * 100) : 0}%</span>
+					<span>{respiratoryEstimate?.qualityLabel ?? 'warming-up'}</span>
+					<span>{respiratoryEstimate?.peakCount ?? 0} R peaks</span>
+				</div>
+				<div class="respiration-sources">
+					<span>QRS RMS {respiratoryEstimate?.qrsRmsBpm ?? '--'}</span>
+					<span>Baseline {respiratoryEstimate?.baselineBpm ?? '--'}</span>
+					<span>RRV {respiratoryEstimate?.rrIntervalBpm ?? '--'}</span>
+				</div>
+			</div>
+			<div class="raw-ecg-trace" aria-label="Decoded raw ECG trace">
+				<svg viewBox="0 0 720 220" role="img">
+					<path class="raw-ecg-midline" d="M 0 110 L 720 110" />
+					{#if rawEcgPath}
+						<path class="raw-ecg-wave" d={rawEcgPath} />
+					{/if}
+				</svg>
+			</div>
+			{#if rawEcgLogs.length > 0}
+				<div class="raw-ecg-log" aria-label="Recent raw ECG packets">
+					{#each rawEcgLogs as log}
+						<p>{log}</p>
+					{/each}
+				</div>
+			{/if}
+		</div>
 
 		{#if !canUseBluetooth}
 			<p class="section-copy status-copy">
@@ -486,6 +656,133 @@
 		border-radius: 1.3rem;
 		background: rgba(255, 255, 255, 0.68);
 		border: 1px solid rgba(160, 174, 197, 0.3);
+	}
+
+	.raw-ecg-panel {
+		margin-top: 0.85rem;
+		padding: 1rem;
+		border-radius: 1.3rem;
+		background: rgba(255, 255, 255, 0.68);
+		border: 1px solid rgba(160, 174, 197, 0.3);
+	}
+
+	.raw-ecg-grid {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin-top: 0.7rem;
+	}
+
+	.raw-ecg-grid span {
+		padding: 0.45rem 0.65rem;
+		border-radius: 999px;
+		background: var(--surface-soft);
+		color: var(--text);
+		font-size: 0.9rem;
+		font-weight: 800;
+	}
+
+	.raw-ecg-copy {
+		margin-top: 0.7rem;
+		overflow-wrap: anywhere;
+	}
+
+	.respiration-panel {
+		display: grid;
+		gap: 0.75rem;
+		margin-top: 0.9rem;
+		padding: 1rem;
+		border-radius: 1rem;
+		background: color-mix(in srgb, var(--surface-soft) 72%, white);
+		border: 1px solid rgba(160, 174, 197, 0.32);
+	}
+
+	.respiration-value {
+		margin: 0.25rem 0 0;
+		font-size: clamp(2rem, 5vw, 3.1rem);
+		font-weight: 800;
+		letter-spacing: -0.04em;
+		color: var(--accent);
+	}
+
+	.respiration-value span {
+		font-size: 0.9rem;
+		letter-spacing: 0;
+		color: var(--muted);
+	}
+
+	.respiration-meta,
+	.respiration-sources {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+	}
+
+	.respiration-meta span,
+	.respiration-sources span {
+		padding: 0.45rem 0.65rem;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.7);
+		color: var(--text);
+		font-size: 0.9rem;
+		font-weight: 800;
+	}
+
+	.respiration-sources span {
+		color: var(--muted);
+	}
+
+	.raw-ecg-trace {
+		margin-top: 0.9rem;
+		border-radius: 1rem;
+		background:
+			linear-gradient(rgba(0, 103, 92, 0.08) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(0, 103, 92, 0.08) 1px, transparent 1px),
+			#07111a;
+		background-size: 28px 28px;
+		overflow: hidden;
+	}
+
+	.raw-ecg-trace svg {
+		display: block;
+		width: 100%;
+		aspect-ratio: 720 / 220;
+	}
+
+	.raw-ecg-midline,
+	.raw-ecg-wave {
+		fill: none;
+		vector-effect: non-scaling-stroke;
+	}
+
+	.raw-ecg-midline {
+		stroke: rgba(193, 255, 242, 0.2);
+		stroke-width: 1;
+	}
+
+	.raw-ecg-wave {
+		stroke: #5bf4de;
+		stroke-width: 2;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		filter: drop-shadow(0 0 0.45rem rgba(91, 244, 222, 0.45));
+	}
+
+	.raw-ecg-log {
+		display: grid;
+		gap: 0.4rem;
+		margin-top: 0.8rem;
+	}
+
+	.raw-ecg-log p {
+		margin: 0;
+		padding: 0.55rem 0.7rem;
+		border-radius: 0.8rem;
+		background: rgba(255, 255, 255, 0.7);
+		color: var(--muted);
+		font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+		font-size: 0.82rem;
+		overflow-wrap: anywhere;
 	}
 
 	.metric-grid {
