@@ -1,8 +1,8 @@
 # deltoideus
 
-## Hackathon MVP: Stress Buddy
+## Hackathon MVP: Study Buddy Stress Score
 
-Stress Buddy combines quick self check-ins with Polar H9 heart-rate data to catch rising stress and trigger immediate action.
+Study Buddy combines quick self check-ins with Polar H9/H10 heart-rate and RR data to spot rising stress during seated study sessions and trigger a gentle recovery prompt.
 
 ## MVP scope
 
@@ -11,8 +11,8 @@ Stress Buddy combines quick self check-ins with Polar H9 heart-rate data to catc
 - Persist one timestamped JSON summary per sensor session into Supabase, including average heart rate and RR variability
 - Attach each check-in to the active sensor session when one exists
 - Sign in with Supabase OAuth so each user sees only their own sessions and check-ins
-- Run a simple stress score from bio-signal + user input
-- Trigger one intervention suggestion based on stress level
+- Run a stress score from RMSSD, heart rate, signal quality, and user labels
+- Trigger one recovery suggestion when the stress signal stays elevated
 - Save check-ins and intervention events to Supabase
 
 ## Stack
@@ -80,7 +80,7 @@ Start Command: npm run start
 
 5. Use AI intervention
 
-- Open the Stress Detection card
+- Open the Stress Score Monitor card
 - The app can call a server endpoint that uses your private OpenAI API key
 - The default model is `gpt-4.1-mini`, which keeps latency and cost low for short coaching replies
 
@@ -95,8 +95,8 @@ Start Command: npm run start
 ## Demo script (60 seconds)
 
 1. Connect Polar H9 (or click `Simulate Spike`)
-2. Set mood, workload, sleep sliders
-3. Show stress level changes in real time
+2. Start a study session and let the RMSSD baseline settle
+3. Show stress-score state changes in real time
 4. Save check-in to Supabase
 5. Show inserted rows in `check_ins` and `interventions`
 

@@ -28,6 +28,14 @@ type SessionSummaryRequest = {
 		captureType?: string | null;
 		segmentLengthSeconds?: number | null;
 		segments?: SessionSegment[];
+		bodyLoadState?: string | null;
+		bodyLoadScore?: number | null;
+		bodyLoadConfidence?: string | null;
+		burnoutScore?: number | null;
+		sustainedStressSeconds?: number | null;
+		activationEvents?: Array<unknown>;
+		recoveryEvents?: Array<unknown>;
+		feedback?: Array<unknown>;
 	};
 };
 
@@ -71,6 +79,12 @@ function fallbackReply(body: SessionSummaryRequest): string {
 	const averageHrvMs = session?.averageHrvMs ?? null;
 	const maxHeartRate = session?.maxHeartRate ?? null;
 	const durationSeconds = session?.durationSeconds ?? 0;
+	const activationCount = session?.activationEvents?.length ?? 0;
+	const labelCount = session?.feedback?.length ?? 0;
+
+	if (activationCount > 0) {
+		return `This study block had ${activationCount} elevated-stress event${activationCount === 1 ? '' : 's'} across ${durationSeconds} seconds of data, with ${labelCount} user label${labelCount === 1 ? '' : 's'} saved for personalization. Treat the signal as a cue to check context, then try a short reset before the next long block.`;
+	}
 
 	if (typeof averageHeartRate === 'number' && typeof averageHrvMs === 'number') {
 		if (averageHeartRate >= 95 || averageHrvMs <= 24) {
@@ -115,6 +129,14 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 	const averageRrMs = session.averageRrMs ?? 'n/a';
 	const lastHrvMs = session.lastHrvMs ?? 'n/a';
 	const maxHeartRate = session.maxHeartRate ?? 'n/a';
+	const bodyLoadState = session.bodyLoadState ?? 'n/a';
+	const bodyLoadScore = session.bodyLoadScore ?? 'n/a';
+	const bodyLoadConfidence = session.bodyLoadConfidence ?? 'n/a';
+	const burnoutScore = session.burnoutScore ?? 'n/a';
+	const sustainedStressSeconds = session.sustainedStressSeconds ?? 'n/a';
+	const activationCount = session.activationEvents?.length ?? 0;
+	const recoveryCount = session.recoveryEvents?.length ?? 0;
+	const feedbackCount = session.feedback?.length ?? 0;
 	const segmentCount = session.segments?.length ?? 0;
 	const peakSegment = session.segments?.reduce<SessionSegment | null>((peak, segment) => {
 		if (peak === null) {
@@ -134,6 +156,8 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		'Sentence 2 should give one gentle, practical next step.',
 		'Do not mention being an AI, a model, or a medical professional.',
 		'Do not diagnose, warn about disorders, or make medical claims.',
+		'Use stress-score language for this seated study-session app.',
+		'Mention that elevated stress score can come from stress, effortful focus, caffeine, sleep loss, or illness only when useful.',
 		'Use supportive, grounded language and refer to the student by name only if it feels natural.',
 		'Do not use bullet points, labels, or quotation marks.'
 	].join('\n');
@@ -150,6 +174,14 @@ export const POST: RequestHandler = async ({ request, fetch }) => {
 		`Average RR ms: ${averageRrMs}`,
 		`Last HRV ms: ${lastHrvMs}`,
 		`Max heart rate bpm: ${maxHeartRate}`,
+		`Stress-score state: ${bodyLoadState}`,
+		`Stress score: ${bodyLoadScore}`,
+		`Stress-score confidence: ${bodyLoadConfidence}`,
+		`Burnout score: ${burnoutScore}`,
+		`Sustained elevated-stress seconds: ${sustainedStressSeconds}`,
+		`Activation event count: ${activationCount}`,
+		`Recovery event count: ${recoveryCount}`,
+		`User feedback label count: ${feedbackCount}`,
 		`Segment length seconds: ${session.segmentLengthSeconds ?? 'n/a'}`,
 		`Segment count: ${segmentCount}`,
 		`Highest average-HR segment index: ${peakSegment?.index ?? 'n/a'}`,

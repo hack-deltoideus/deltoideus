@@ -50,9 +50,12 @@
 
 	onMount(() => {
 		const unsubscribe = sensorSession.subscribe((state) => {
-			currentOverallScore = state.overallStressScore;
+			currentOverallScore = state.bodyLoadScore;
 			const isActiveSession = Boolean(state.sessionStartedAt);
-			const isAboveThreshold = isActiveSession && state.overallStressScore > CRITICAL_SCORE_THRESHOLD;
+			const isAboveThreshold =
+				isActiveSession &&
+				state.bodyLoadState === 'activated' &&
+				state.bodyLoadScore > CRITICAL_SCORE_THRESHOLD;
 
 			if (!hasInitializedCriticalWatch) {
 				hasInitializedCriticalWatch = true;

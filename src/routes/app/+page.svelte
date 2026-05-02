@@ -12,8 +12,11 @@
 		sensorSession,
 		simulateSharedSpike,
 		startSharedSession,
+		type BodyLoadConfidence,
+		type BodyLoadFeedbackLabel,
+		type BodyLoadState,
 		type DiagnosticSample,
-		type RmssdDiagnosis
+		type RobustMetricRange
 	} from '$lib/sensor-session';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
@@ -27,7 +30,6 @@
 
 	type OAuthProvider = 'google';
 	type ChatEntry = { role: 'user' | 'assistant'; text: string };
-	type StressLevel = 'low' | 'rising' | 'high';
 	type CharacterController = {
 		setIdle: () => void;
 		setReading: () => void;
@@ -41,13 +43,21 @@
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
 	let baselineRmssdMs = $state<number | undefined>(undefined);
+	let baselineRmssdRange = $state<RobustMetricRange | null>(null);
+	let baselineHeartRateRange = $state<RobustMetricRange | null>(null);
 	let currentRmssdMs = $state<number | undefined>(undefined);
 	let rmssdDeltaPercent = $state<number | undefined>(undefined);
-	let rmssdDiagnosis = $state<RmssdDiagnosis>('building-baseline');
+	let bodyLoadState = $state<BodyLoadState>('settling');
+	let bodyLoadScore = $state(0);
+	let bodyLoadConfidence = $state<BodyLoadConfidence>('low');
+	let burnoutScore = $state(0);
+	let sustainedStressSeconds = $state(0);
+	let signalQualityLevel = $state('poor');
+	let activationEventCount = $state(0);
+	let feedbackCount = $state(0);
 	let baselineProgressPercent = $state(0);
-	let baselineCaptureSeconds = $state(30);
-	let diagnosisWindowSeconds = $state(30);
-	let rmssdThresholdDropPercent = $state(22);
+	let baselineCaptureSeconds = $state(90);
+	let diagnosisWindowSeconds = $state(60);
 
 	let currentSession = $state<Session | null>(null);
 	let currentUser = $state<User | null>(null);
@@ -73,60 +83,15 @@
 	let sessionStartedAt = $state<string | null>(null);
 	let sessionSamples = $state<DiagnosticSample[]>([]);
 
-	const stressScore = $derived.by(() => {
-		if (rmssdDiagnosis === 'building-baseline' || typeof rmssdDeltaPercent !== 'number') {
-			return 0;
-		}
-
-		if (rmssdDiagnosis === 'recovering') {
-			return 10;
-		}
-
-		return Math.max(0, Math.min(100, Math.round(-rmssdDeltaPercent)));
-	});
-
-	const stressLevel = $derived.by<StressLevel>(() => {
-		if (rmssdDiagnosis === 'stressed') {
-			return 'high';
-		}
-
-		if (
-			typeof rmssdDeltaPercent === 'number' &&
-			rmssdDeltaPercent <= -(rmssdThresholdDropPercent * 0.6)
-		) {
-			return 'rising';
-		}
-
-		return 'low';
-	});
-
-	const intervention = $derived.by(() => {
-		if (rmssdDiagnosis === 'stressed') {
-			return 'Your RMSSD is below baseline. Try a 60-second breathing reset.';
-		}
-
-		if (rmssdDiagnosis === 'recovering') {
-			return 'Recovery is improving. Stay with what is working.';
-		}
-
-		if (rmssdDiagnosis === 'building-baseline') {
-			return `Stay settled for ${baselineCaptureSeconds} seconds so we can capture your RMSSD baseline.`;
-		}
-
-		return 'Your RMSSD is near baseline. Keep your current pace.';
-	});
-
-	const levelClass = $derived(`level-${stressLevel}`);
+	const levelClass = $derived(`level-${bodyLoadState}`);
 	const levelLabel = $derived(
-		rmssdDiagnosis === 'building-baseline'
+		bodyLoadState === 'settling'
 			? 'Baseline'
-			: rmssdDiagnosis === 'recovering'
+			: bodyLoadState === 'recovering'
 				? 'Recovering'
-				: stressLevel === 'low'
+				: bodyLoadState === 'steady'
 					? 'Steady'
-					: stressLevel === 'rising'
-						? 'Rising'
-						: 'High'
+					: 'Activated'
 	);
 	const displayName = $derived(getDisplayName(currentUser));
 	const avatarLetter = $derived(displayName.charAt(0).toUpperCase() || 'U');
@@ -137,13 +102,21 @@
 			rrMs = state.rrMs;
 			hrvMs = state.hrvMs;
 			baselineRmssdMs = state.baselineRmssdMs;
+			baselineRmssdRange = state.baselineRmssdRange;
+			baselineHeartRateRange = state.baselineHeartRateRange;
 			currentRmssdMs = state.currentRmssdMs;
 			rmssdDeltaPercent = state.rmssdDeltaPercent;
-			rmssdDiagnosis = state.rmssdDiagnosis;
+			bodyLoadState = state.bodyLoadState;
+			bodyLoadScore = state.bodyLoadScore;
+			bodyLoadConfidence = state.bodyLoadConfidence;
+			burnoutScore = state.burnoutScore;
+			sustainedStressSeconds = state.sustainedStressSeconds;
+			signalQualityLevel = state.signalQuality.level;
+			activationEventCount = state.bodyLoadEvents.filter((event) => event.kind === 'activation').length;
+			feedbackCount = state.bodyLoadFeedback.length;
 			baselineProgressPercent = state.baselineProgressPercent;
 			baselineCaptureSeconds = state.baselineCaptureSeconds;
 			diagnosisWindowSeconds = state.diagnosisWindowSeconds;
-			rmssdThresholdDropPercent = state.rmssdThresholdDropPercent;
 			isConnecting = state.isConnecting;
 			isSavingSession = state.isSavingSession;
 			isSensorConnected = state.isSensorConnected;
@@ -282,44 +255,58 @@
 		return `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
 	}
 
-	function diagnosisHeadline(status: RmssdDiagnosis): string {
-		if (status === 'building-baseline') {
-			return 'Building your RMSSD baseline';
+	function formatRange(range: RobustMetricRange | null | undefined, unit: string): string {
+		if (typeof range?.lower !== 'number' || typeof range.upper !== 'number') {
+			return '--';
 		}
 
-		if (status === 'stressed') {
-			return 'RMSSD is below baseline';
+		return `${range.lower.toFixed(0)}-${range.upper.toFixed(0)} ${unit}`;
+	}
+
+	function formatDurationShort(seconds: number): string {
+		if (seconds < 60) {
+			return `${seconds}s`;
+		}
+
+		const minutes = Math.floor(seconds / 60);
+		const remainder = seconds % 60;
+		return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
+	}
+
+	function bodyLoadHeadline(status: BodyLoadState): string {
+		if (status === 'settling') {
+			return 'Building your stress baseline';
+		}
+
+		if (status === 'activated') {
+			return 'Stress score is elevated';
 		}
 
 		if (status === 'recovering') {
-			return 'RMSSD is recovering';
+			return 'Recovery signal is improving';
 		}
 
-		return 'RMSSD is near baseline';
+		return 'Stress score is steady';
 	}
 
-	function diagnosisCopy(status: RmssdDiagnosis): string {
-		if (status === 'building-baseline') {
-			return `Stay settled for ${baselineCaptureSeconds} seconds so we can lock in your baseline RMSSD.`;
+	function bodyLoadCopy(status: BodyLoadState): string {
+		if (status === 'settling') {
+			return `Stay settled for ${baselineCaptureSeconds} seconds so we can compare this study block against your own baseline.`;
 		}
 
-		if (status === 'stressed') {
-			return `Your current RMSSD is more than ${rmssdThresholdDropPercent}% below baseline, which we treat as a stress signal.`;
+		if (status === 'activated') {
+			return 'Your score has stayed elevated long enough to be worth a quick check-in or reset.';
 		}
 
 		if (status === 'recovering') {
-			return 'Your RMSSD has climbed back above baseline, which usually points toward recovery.';
+			return 'Your current window is moving back toward baseline. Stay with the reset or slower pace that is helping.';
 		}
 
-		return 'Your current RMSSD is still close to your session baseline.';
+		return 'Your current pattern is close enough to your study-session baseline for steady work.';
 	}
 
-	function tuneDetectionMoreSensitive() {
-		markSharedDetectionFeedback('stress');
-	}
-
-	function tuneDetectionLessSensitive() {
-		markSharedDetectionFeedback('normal');
+	function labelBodyLoad(label: BodyLoadFeedbackLabel) {
+		markSharedDetectionFeedback(label);
 	}
 
 	function resetDetectionTuning() {
@@ -617,16 +604,16 @@
 		<section class="kit-grid">
 			<article class="stress-card kit-panel {levelClass}">
 				<div class="card-topline">
-					<p class="meta-label">RMSSD Baseline Detector</p>
+					<p class="meta-label">Stress Score Monitor</p>
 				</div>
 
 				<div class="rmssd-summary">
-					<p class="rmssd-kicker">Primary signal</p>
-					<h2>{diagnosisHeadline(rmssdDiagnosis)}</h2>
-					<p class="rmssd-copy">{diagnosisCopy(rmssdDiagnosis)}</p>
+					<p class="rmssd-kicker">Stress signal</p>
+					<h2>{bodyLoadHeadline(bodyLoadState)}</h2>
+					<p class="rmssd-copy">{bodyLoadCopy(bodyLoadState)}</p>
 
 					<div class="score-row">
-						<p class="score-number">{stressScore}</p>
+						<p class="score-number">{bodyLoadScore}</p>
 						<p class="score-max">/100</p>
 					</div>
 
@@ -635,22 +622,18 @@
 						<p class="pill">Window: {diagnosisWindowSeconds}s</p>
 					</div>
 
-					<div class="rmssd-grid">
+					<div class="score-metric-grid">
 						<div class="metric-card">
-							<p class="metric-label">BASELINE RMSSD</p>
-							<p class="metric-value secondary">{baselineRmssdMs ?? '--'} <span>MS</span></p>
+							<p class="metric-label">BURNOUT SCORE</p>
+							<p class="metric-value secondary">{burnoutScore}<span>/100</span></p>
 						</div>
 						<div class="metric-card">
-							<p class="metric-label">CURRENT RMSSD</p>
-							<p class="metric-value secondary">{currentRmssdMs ?? '--'} <span>MS</span></p>
+							<p class="metric-label">ELEVATED TIME</p>
+							<p class="metric-value secondary">{formatDurationShort(sustainedStressSeconds)}</p>
 						</div>
 						<div class="metric-card">
-							<p class="metric-label">CHANGE</p>
-							<p class="metric-value secondary">{formatSignedPercent(rmssdDeltaPercent)} <span>VS BASELINE</span></p>
-						</div>
-						<div class="metric-card">
-							<p class="metric-label">STRESS THRESHOLD</p>
-							<p class="metric-value secondary">-{rmssdThresholdDropPercent}% <span>DROP</span></p>
+							<p class="metric-label">CONFIDENCE</p>
+							<p class="metric-value secondary">{bodyLoadConfidence}<span>{signalQualityLevel}</span></p>
 						</div>
 					</div>
 
@@ -660,9 +643,37 @@
 							<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
 						</div>
 						<p class="section-copy">
-							This score is computed from your RMSSD change versus the first {baselineCaptureSeconds} seconds of the session.
+							This score compares your current {diagnosisWindowSeconds}-second window to the first {baselineCaptureSeconds} seconds of this study session. It is not a diagnosis.
 						</p>
 					</div>
+
+					<details class="score-details">
+						<summary>
+							<span class="material-symbols-outlined">help</span>
+							<span>How this score works</span>
+						</summary>
+						<div class="rmssd-grid">
+							<div class="metric-card">
+								<p class="metric-label">BASELINE HRV BAND</p>
+								<p class="metric-value secondary">{formatRange(baselineRmssdRange, 'MS')}</p>
+							</div>
+							<div class="metric-card">
+								<p class="metric-label">BASELINE HR BAND</p>
+								<p class="metric-value secondary">{formatRange(baselineHeartRateRange, 'BPM')}</p>
+							</div>
+							<div class="metric-card">
+								<p class="metric-label">CURRENT HRV</p>
+								<p class="metric-value secondary">{currentRmssdMs ?? '--'} <span>MS</span></p>
+							</div>
+							<div class="metric-card">
+								<p class="metric-label">BASELINE CHANGE</p>
+								<p class="metric-value secondary">{formatSignedPercent(rmssdDeltaPercent)}</p>
+							</div>
+						</div>
+						<p class="section-copy">
+							Under the hood, Study Buddy uses RR intervals from Polar to estimate HRV with RMSSD, compares it against a robust personal baseline band, checks heart-rate drift, and waits for a sustained change before raising the score.
+						</p>
+					</details>
 				</div>
 			</article>
 
@@ -670,7 +681,7 @@
 				<div class="section-heading">
 					<div>
 						<h3>Polar H9 Session</h3>
-						<p class="section-copy">Live HR, RR, and RMSSD against your session baseline.</p>
+						<p class="section-copy">Live stress score from your seated study-session baseline.</p>
 					</div>
 					<div class="live-indicator">
 						<span class:dot-live={isSensorConnected} class="live-dot"></span>
@@ -678,24 +689,24 @@
 					</div>
 				</div>
 
-				<div class="rmssd-hero diagnosis-{rmssdDiagnosis}">
-					<p class="rmssd-kicker">Current diagnosis</p>
-					<h3>{diagnosisHeadline(rmssdDiagnosis)}</h3>
-					<p class="rmssd-copy">{diagnosisCopy(rmssdDiagnosis)}</p>
+				<div class="rmssd-hero diagnosis-{bodyLoadState}">
+					<p class="rmssd-kicker">Current state</p>
+					<h3>{bodyLoadHeadline(bodyLoadState)}</h3>
+					<p class="rmssd-copy">{bodyLoadCopy(bodyLoadState)}</p>
 				</div>
 
 				<div class="metric-pair">
 					<div class="metric-card">
+						<p class="metric-label">STRESS SCORE</p>
+						<p class="metric-value">{bodyLoadScore}<span>/100</span></p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">BURNOUT SCORE</p>
+						<p class="metric-value secondary">{burnoutScore}<span>/100</span></p>
+					</div>
+					<div class="metric-card">
 						<p class="metric-label">HEART RATE</p>
 						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">RR INTERVAL</p>
-						<p class="metric-value secondary">{rrMs ?? '--'} <span>MS</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">CURRENT RMSSD</p>
-						<p class="metric-value secondary">{currentRmssdMs ?? hrvMs ?? '--'} <span>MS</span></p>
 					</div>
 				</div>
 
@@ -728,11 +739,14 @@
 					</div>
 
 					<div class="feedback-buttons">
-						<button class="button button-subtle" onclick={tuneDetectionMoreSensitive} disabled={!sessionStartedAt}>
-							This feels stressful
+						<button class="button button-subtle" onclick={() => labelBodyLoad('felt_stressed')} disabled={!sessionStartedAt}>
+							Felt stressful
 						</button>
-						<button class="button button-subtle" onclick={tuneDetectionLessSensitive} disabled={!sessionStartedAt}>
-							This feels like normal focus
+						<button class="button button-subtle" onclick={() => labelBodyLoad('normal_focus')} disabled={!sessionStartedAt}>
+							Normal focus
+						</button>
+						<button class="button button-subtle" onclick={() => labelBodyLoad('caffeine_illness_sleep')} disabled={!sessionStartedAt}>
+							Caffeine / sleep / illness
 						</button>
 						<button class="button button-subtle" onclick={resetDetectionTuning} disabled={!sessionStartedAt}>
 							Reset threshold
@@ -752,6 +766,8 @@
 						<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
 						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
 						<span>{sessionSamples.length} captured samples</span>
+						<span>{activationEventCount} activation events</span>
+						<span>{feedbackCount} labels saved</span>
 					</div>
 				</div>
 
@@ -1410,6 +1426,35 @@
 		gap: 0.85rem;
 	}
 
+	.score-metric-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 0.85rem;
+	}
+
+	.score-details {
+		display: grid;
+		gap: 0.85rem;
+	}
+
+	.score-details summary {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		width: fit-content;
+		cursor: pointer;
+		font-weight: 800;
+		color: rgba(236, 245, 255, 0.9);
+	}
+
+	.score-details summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.score-details[open] summary {
+		margin-bottom: 0.85rem;
+	}
+
 	.baseline-panel {
 		display: grid;
 		gap: 0.75rem;
@@ -1725,7 +1770,7 @@
 		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 78%, white);
 	}
 
-	.diagnosis-building-baseline {
+	.diagnosis-settling {
 		border-color: rgba(160, 174, 197, 0.34);
 	}
 
@@ -1733,7 +1778,7 @@
 		border-color: rgba(91, 244, 222, 0.34);
 	}
 
-	.diagnosis-stressed {
+	.diagnosis-activated {
 		border-color: rgba(251, 81, 81, 0.38);
 		background: linear-gradient(180deg, rgba(251, 81, 81, 0.1), rgba(255, 255, 255, 0.92));
 	}
@@ -1920,12 +1965,12 @@
 		border-color: rgba(91, 244, 222, 0.28);
 	}
 
-	.level-rising {
+	.level-activated {
 		border-color: rgba(252, 192, 37, 0.42);
 	}
 
-	.level-high {
-		border-color: rgba(251, 81, 81, 0.48);
+	.level-recovering {
+		border-color: rgba(82, 191, 154, 0.42);
 	}
 
 	.accent-primary {
@@ -2109,6 +2154,7 @@
 		}
 
 		.rmssd-grid,
+		.score-metric-grid,
 		.feedback-buttons {
 			grid-template-columns: 1fr;
 		}

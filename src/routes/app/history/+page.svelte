@@ -42,6 +42,17 @@
 		averageHrvMs: number | null;
 		lastHrvMs: number | null;
 		maxHeartRate: number | null;
+		bodyLoadState?: 'settling' | 'steady' | 'activated' | 'recovering';
+		bodyLoadScore?: number;
+		bodyLoadConfidence?: 'low' | 'possible' | 'likely';
+		burnoutScore?: number;
+		sustainedStressSeconds?: number;
+		activationEvents?: Array<unknown>;
+		recoveryEvents?: Array<unknown>;
+		feedback?: Array<unknown>;
+		bestFocusStretchSeconds?: number;
+		firstRecoverySeconds?: number | null;
+		nextSessionSuggestion?: string;
 		segmentLengthSeconds: number;
 		segments: SessionSegment[];
 	};
@@ -69,6 +80,11 @@
 		durationSeconds: number;
 		avgHeartRate: number | null;
 		avgHrvMs: number | null;
+		bodyLoadScore: number | null;
+		burnoutScore: number | null;
+		bodyLoadState: string;
+		activationCount: number;
+		labelCount: number;
 		deviceLabel: string;
 		segments: SessionSegment[];
 	};
@@ -92,6 +108,8 @@
 	const sessionCards = $derived(filteredSessions.map(toSessionCard));
 	const averageHeartRate = $derived(averageMetric(sessionCards, 'avgHeartRate'));
 	const averageHrv = $derived(averageMetric(sessionCards, 'avgHrvMs'));
+	const averageBodyLoad = $derived(averageMetric(sessionCards, 'bodyLoadScore'));
+	const averageBurnout = $derived(averageMetric(sessionCards, 'burnoutScore'));
 	const averageDurationSeconds = $derived(
 		sessionCards.length > 0
 			? Math.round(sessionCards.reduce((total, session) => total + session.durationSeconds, 0) / sessionCards.length)
@@ -322,12 +340,17 @@
 			durationSeconds,
 			avgHeartRate,
 			avgHrvMs,
+			bodyLoadScore: payload?.bodyLoadScore ?? null,
+			burnoutScore: payload?.burnoutScore ?? null,
+			bodyLoadState: formatBodyLoadState(payload?.bodyLoadState),
+			activationCount: payload?.activationEvents?.length ?? 0,
+			labelCount: payload?.feedback?.length ?? 0,
 			deviceLabel: payload?.deviceInfo?.name ?? session.device_name ?? 'Unknown device',
 			segments: payload?.segments ?? []
 		};
 	}
 
-	function averageMetric(sessions: SessionCard[], key: 'avgHeartRate' | 'avgHrvMs'): number | null {
+	function averageMetric(sessions: SessionCard[], key: 'avgHeartRate' | 'avgHrvMs' | 'bodyLoadScore' | 'burnoutScore'): number | null {
 		const values = sessions
 			.map((session) => session[key])
 			.filter((value): value is number => typeof value === 'number' && !Number.isNaN(value));
@@ -337,6 +360,17 @@
 		}
 
 		return values.reduce((total, value) => total + value, 0) / values.length;
+	}
+
+	function formatBodyLoadState(value: SessionSummaryPayload['bodyLoadState']): string {
+		if (!value) {
+			return 'Not labeled';
+		}
+
+		return value
+			.split(/[_-]+/)
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+			.join(' ');
 	}
 
 	function barHeight(value: number, maxValue: number): number {
@@ -431,7 +465,7 @@
 			<p class="eyebrow">History</p>
 			<h1>Sign in to review your session history.</h1>
 			<p class="auth-copy">
-				History shows your saved sensor sessions with date filters, heart-rate trends, average HRV, duration, and tracked activity.
+				History shows your saved sensor sessions with date filters, heart-rate trends, stress scores, burnout scores, duration, and tracked activity.
 			</p>
 
 			<div class="auth-actions">
@@ -466,8 +500,12 @@
 					<p class="stat-value">{formatMetric(averageHeartRate, 1)} <span>BPM</span></p>
 				</article>
 				<article class="stat-card">
-					<p class="stat-label">Average HRV</p>
-					<p class="stat-value">{formatMetric(averageHrv, 1)} <span>MS</span></p>
+					<p class="stat-label">Average Stress Score</p>
+					<p class="stat-value">{formatMetric(averageBodyLoad, 0)} <span>/100</span></p>
+				</article>
+				<article class="stat-card">
+					<p class="stat-label">Average Burnout Score</p>
+					<p class="stat-value">{formatMetric(averageBurnout, 0)} <span>/100</span></p>
 				</article>
 				<article class="stat-card">
 					<p class="stat-label">Average Session Length</p>
@@ -504,13 +542,13 @@
 				<article class="chart-card">
 					<div class="section-heading">
 						<div>
-							<h2>Average HRV by session</h2>
-							<p>Average HRV in milliseconds for each session in the current filter.</p>
+							<h2>Average RMSSD by session</h2>
+							<p>Average RMSSD in milliseconds for each session in the current filter.</p>
 						</div>
 					</div>
 
 					{#if hrvChart.length > 0}
-						<div class="bar-chart" role="img" aria-label="HRV chart">
+						<div class="bar-chart" role="img" aria-label="RMSSD chart">
 							{#each hrvChart as point}
 								<div class="bar-group">
 									<div class="bar-value">{point.display}</div>
@@ -522,7 +560,7 @@
 							{/each}
 						</div>
 					{:else}
-						<p class="inline-hint">No HRV summary is available yet.</p>
+						<p class="inline-hint">No RMSSD summary is available yet.</p>
 					{/if}
 				</article>
 			</section>
@@ -562,8 +600,16 @@
 										<strong>{formatMetric(session.avgHeartRate, 1)} bpm</strong>
 									</div>
 									<div>
-										<span class="metric-label">Average HRV</span>
-										<strong>{formatMetric(session.avgHrvMs, 1)} ms</strong>
+										<span class="metric-label">Burnout Score</span>
+										<strong>{formatMetric(session.burnoutScore, 0)} /100</strong>
+									</div>
+									<div>
+										<span class="metric-label">Stress Score</span>
+										<strong>{formatMetric(session.bodyLoadScore, 0)} /100</strong>
+									</div>
+									<div>
+										<span class="metric-label">State</span>
+										<strong>{session.bodyLoadState}</strong>
 									</div>
 									<div>
 										<span class="metric-label">Time</span>
@@ -573,6 +619,11 @@
 										<span class="metric-label">Device</span>
 										<strong>{session.deviceLabel}</strong>
 									</div>
+								</div>
+
+								<div class="saved-metrics session-tags">
+									<span>{session.activationCount} activation events</span>
+									<span>{session.labelCount} labels</span>
 								</div>
 
 								{#if session.segments.length > 0}
@@ -942,6 +993,22 @@
 		margin-top: 0.25rem;
 		font-size: 1.05rem;
 		color: var(--on-surface);
+	}
+
+	.session-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.55rem;
+		margin-top: 1rem;
+	}
+
+	.session-tags span {
+		padding: 0.42rem 0.65rem;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--primary, #00675c) 12%, white);
+		color: var(--primary, #00675c);
+		font-size: 0.82rem;
+		font-weight: 800;
 	}
 
 	.segment-summary {
