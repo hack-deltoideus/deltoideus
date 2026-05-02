@@ -364,7 +364,7 @@
 	}
 
 	.site-button-secondary {
-		background: rgba(201, 222, 255, 0.7);
+		background: rgba(201, 222, 255, 0.95);
 		color: var(--on-surface, #1f2937);
 	}
 

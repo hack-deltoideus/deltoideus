@@ -539,8 +539,8 @@
 							<p class="metric-value secondary">{formatDurationShort(sustainedStressSeconds)}</p>
 						</div>
 						<div class="metric-card">
-							<p class="metric-label">CONFIDENCE</p>
-							<p class="metric-value">{bodyLoadConfidence}<span>{signalQualityLevel}</span></p>
+							<p class="metric-label">SIGNAL QUALITY</p>
+							<p class="metric-value">{signalQualityLevel}</p>
 						</div>
 					</div>
 
@@ -586,7 +586,7 @@
 					</details>
 				</div>
 
-				<div class="metric-grid">
+				<!--<div class="metric-grid">
 					<div class="metric-card">
 						<p class="metric-label">HEART RATE</p>
 						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
@@ -599,7 +599,7 @@
 						<p class="metric-label">BURNOUT SCORE</p>
 						<p class="metric-value secondary">{burnoutScore}<span>/100</span></p>
 					</div>
-				</div>
+				</div>-->
 
 				<div class="action-stack">
 					<button class="button" onclick={connectSensor} disabled={!canUseBluetooth || isConnecting || isSensorConnected}>
@@ -607,7 +607,7 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
-					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser || !isSensorConnected}>
 						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
 						<span>
 							{sessionStartedAt
@@ -618,14 +618,14 @@
 						</span>
 					</button>
 
-					<div class="inline-buttons">
+					<div class="inline-buttons"style={isSensorConnected ? 'display: block' : 'display: none'}>
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
 						</button>
-						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
+						<!--<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>-->
 					</div>
 
-					<div class="feedback-buttons">
+					<div class="feedback-buttons" style={sessionStartedAt ? 'display: block' : 'display: none'}>
 						<button class="button button-subtle" onclick={() => labelBodyLoad('felt_stressed')} disabled={!sessionStartedAt}>
 							Felt stressful
 						</button>

@@ -56,7 +56,7 @@
 	let activationEventCount = $state(0);
 	let feedbackCount = $state(0);
 	let baselineProgressPercent = $state(0);
-	let baselineCaptureSeconds = $state(90);
+	let baselineCaptureSeconds = $state(60);
 	let diagnosisWindowSeconds = $state(60);
 
 	let currentSession = $state<Session | null>(null);
@@ -608,7 +608,7 @@
 				</div>
 
 				<div class="rmssd-summary">
-					<p class="rmssd-kicker">Stress signal</p>
+				
 					<h2>{bodyLoadHeadline(bodyLoadState)}</h2>
 					<p class="rmssd-copy">{bodyLoadCopy(bodyLoadState)}</p>
 
@@ -632,8 +632,8 @@
 							<p class="metric-value secondary">{formatDurationShort(sustainedStressSeconds)}</p>
 						</div>
 						<div class="metric-card">
-							<p class="metric-label">CONFIDENCE</p>
-							<p class="metric-value secondary">{bodyLoadConfidence}<span>{signalQualityLevel}</span></p>
+							<p class="metric-label">SIGNAL QUALITY</p>
+							<p class="metric-value secondary">{signalQualityLevel}</p>
 						</div>
 					</div>
 
@@ -680,7 +680,7 @@
 			<article class="sensor-card kit-panel" id="sensor">
 				<div class="section-heading">
 					<div>
-						<h3>Polar H9 Session</h3>
+						<h3>Current Session</h3>
 						<p class="section-copy">Live stress score from your seated study-session baseline.</p>
 					</div>
 					<div class="live-indicator">
@@ -720,7 +720,7 @@
 						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
 					</button>
 
-					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser}>
+					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser || !isSensorConnected}>
 						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
 						<span>
 							{sessionStartedAt
@@ -731,14 +731,14 @@
 						</span>
 					</button>
 
-					<div class="inline-buttons">
+					<div class="inline-buttons" style={isSensorConnected ? 'display: block' : 'display: none'}>
 						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
 							Disconnect
 						</button>
-						<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>
+					<!--	<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button> -->
 					</div>
 
-					<div class="feedback-buttons">
+					<div class="feedback-buttons" style={sessionStartedAt ? 'display: block' : 'display: none'}>
 						<button class="button button-subtle" onclick={() => labelBodyLoad('felt_stressed')} disabled={!sessionStartedAt}>
 							Felt stressful
 						</button>
@@ -850,7 +850,7 @@
 						</div>
 
 						<div class="helper-meta">
-							<p class="composer-hint">Press Enter to send. Shift+Enter adds a new line.</p>
+							<p class="composer-hint">Press Enter to send.</p>
 						</div>
 
 						{#if helperStatus}
@@ -1396,7 +1396,7 @@
 	}
 
 	.rmssd-kicker {
-		color: rgba(232, 255, 250, 0.82);
+		color: rgba(20, 141, 115, 0.82);
 	}
 
 	.rmssd-summary h2,
