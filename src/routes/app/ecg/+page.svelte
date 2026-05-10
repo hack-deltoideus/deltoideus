@@ -9,26 +9,56 @@
 		subscribeLiveEcgReadings,
 		type LiveEcgReading
 	} from '$lib/live-ecg-stream';
-	import { connectHeartRateMonitor } from '$lib/polar';
+	import {
+		connectPolarMonitor,
+		POLAR_H10_ECG_SAMPLE_RATE_HZ,
+		type PolarMonitorConnection
+	} from '$lib/polar';
+	import {
+		RespiratoryRateEstimator,
+		type RespiratoryRateEstimate
+	} from '$lib/respiration';
 	let waveformSessionKey = $state(0);
 	let nowMs = $state(Date.now());
 	let lastReadingAtMs = $state<number | null>(null);
+	let lastEcgPacketAtMs = $state<number | null>(null);
 	let latestHeartRate = $state<number | null>(null);
 	let latestRrMs = $state<number | null>(null);
+	let latestEcgSamples = $state<number[] | null>(null);
+	let latestRespiration = $state<RespiratoryRateEstimate | null>(null);
+	let ecgPacketCount = $state(0);
+	let ecgSampleCount = $state(0);
+	let deviceName = $state('Polar H10');
+	let heartRateStreamStatus = $state('Idle');
+	let ecgStreamStatus = $state('Idle');
 	let canUseBluetooth = $state(false);
 	let isConnecting = $state(false);
 	let isSensorConnected = $state(false);
 	let sensorStatus = $state('No live device connected.');
-	let stopSensor = $state<(() => Promise<void>) | null>(null);
+	let sensorConnection = $state<PolarMonitorConnection | null>(null);
+	const respirationEstimator = new RespiratoryRateEstimator({
+		sampleRateHz: POLAR_H10_ECG_SAMPLE_RATE_HZ
+	});
 
-	const signalIsLive = $derived(lastReadingAtMs !== null && nowMs - lastReadingAtMs < 2500);
+	const ecgSignalIsLive = $derived(lastEcgPacketAtMs !== null && nowMs - lastEcgPacketAtMs < 2500);
+	const signalIsLive = $derived(
+		ecgSignalIsLive || (lastReadingAtMs !== null && nowMs - lastReadingAtMs < 2500)
+	);
 	const signalLabel = $derived(signalIsLive ? 'LIVE' : 'IDLE');
 	const signalCopy = $derived(
 		isSensorConnected
-			? 'Streaming live HR/RR samples into the simulated heart visual.'
-			: 'Monitor is on live standby and will react as soon as a compatible device starts sending data.'
+			? 'Streaming raw Polar H10 ECG with HR/RR support into the live visual.'
+			: 'Monitor is on live standby and will react as soon as the H10 starts sending data.'
 	);
 	const connectionLabel = $derived(isSensorConnected ? 'CONNECTED' : 'STANDBY');
+
+	function formatConfidencePercent(value: number | null | undefined): string {
+		if (typeof value !== 'number') {
+			return '--';
+		}
+
+		return `${Math.round(value * 100)}%`;
+	}
 
 	onMount(() => {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
@@ -42,8 +72,8 @@
 
 		return () => {
 			window.clearInterval(clock);
-			if (stopSensor) {
-				void stopSensor();
+			if (sensorConnection) {
+				void sensorConnection.disconnect();
 			}
 			unsubscribe();
 		};
@@ -51,8 +81,21 @@
 
 	function handleLiveReading(reading: LiveEcgReading) {
 		lastReadingAtMs = reading.receivedAtMs;
-		latestHeartRate = reading.heartRate;
-		latestRrMs = reading.rrMs;
+		if (typeof reading.heartRate === 'number') {
+			latestHeartRate = reading.heartRate;
+		}
+
+		if (typeof reading.rrMs === 'number') {
+			latestRrMs = reading.rrMs;
+		}
+
+		if (reading.ecgSamplesMicrovolts?.length) {
+			lastEcgPacketAtMs = reading.receivedAtMs;
+			latestEcgSamples = reading.ecgSamplesMicrovolts;
+			ecgPacketCount += 1;
+			ecgSampleCount += reading.ecgSamplesMicrovolts.length;
+			latestRespiration = respirationEstimator.addSamples(reading.ecgSamplesMicrovolts);
+		}
 	}
 
 	async function connectDevice() {
@@ -61,38 +104,76 @@
 		}
 
 		isConnecting = true;
-		sensorStatus = 'Connecting to heart rate monitor...';
+		sensorStatus = 'Connecting to Polar H10...';
 
 		try {
-			stopSensor = await connectHeartRateMonitor((reading) => {
-				const nextReading: LiveEcgReading = {
-					heartRate: reading.heartRate,
-					rrMs: reading.rrMs ?? Math.round(60000 / Math.max(reading.heartRate, 1)),
-					receivedAtMs: Date.now()
-				};
+			const connection = await connectPolarMonitor({
+				onDevice: (name) => {
+					deviceName = name;
+				},
+				onHeartRateStatus: (status) => {
+					heartRateStreamStatus = status;
+				},
+				onEcgStatus: (status) => {
+					ecgStreamStatus = status;
+				},
+				onDisconnected: () => {
+					isSensorConnected = false;
+					sensorConnection = null;
+					sensorStatus = 'Device disconnected.';
+				},
+				onHeartRate: (reading) => {
+					const nextReading: LiveEcgReading = {
+						heartRate: reading.heartRate,
+						rrMs: reading.rrMs ?? Math.round(60000 / Math.max(reading.heartRate, 1)),
+						receivedAtMs: Date.now()
+					};
 
-				publishLiveEcgReading(nextReading);
+					publishLiveEcgReading(nextReading);
+				},
+				onEcgPacket: (packet) => {
+					const samples = packet.samples.map((sample) => sample.microvolts);
+					publishLiveEcgReading({
+						receivedAtMs: Date.now(),
+						ecgSamplesMicrovolts: samples,
+						ecgSampleRateHz: POLAR_H10_ECG_SAMPLE_RATE_HZ
+					});
+				}
 			});
+			await connection.start();
+			sensorConnection = connection;
 
 			isSensorConnected = true;
 			waveformSessionKey += 1;
-			sensorStatus = 'Connected. Streaming live HR/RR into the ECG monitor.';
+			respirationEstimator.reset();
+			latestRespiration = null;
+			ecgPacketCount = 0;
+			ecgSampleCount = 0;
+			sensorStatus = 'Connected. Streaming raw ECG, HR, and RR from the Polar H10.';
 		} catch (error) {
 			sensorStatus =
-				error instanceof Error ? error.message : 'Could not connect to heart rate monitor.';
+				error instanceof Error ? error.message : 'Could not connect to Polar H10.';
 		} finally {
 			isConnecting = false;
 		}
 	}
 
 	async function disconnectDevice() {
-		if (!stopSensor) {
+		if (!sensorConnection) {
 			return;
 		}
 
-		await stopSensor();
-		stopSensor = null;
+		await sensorConnection.disconnect();
+		sensorConnection = null;
 		isSensorConnected = false;
+		lastEcgPacketAtMs = null;
+		latestEcgSamples = null;
+		latestRespiration = null;
+		heartRateStreamStatus = 'Stopped';
+		ecgStreamStatus = 'Stopped';
+		ecgPacketCount = 0;
+		ecgSampleCount = 0;
+		respirationEstimator.reset();
 		sensorStatus = 'Disconnected. ECG monitor is back to flatline standby.';
 	}
 </script>
@@ -109,9 +190,9 @@
 			<p class="eyebrow">Live Heart Visual</p>
 			<h1>Reactive ECG-style monitor</h1>
 			<p class="hero-copy">
-				This screen is now dedicated to the live Polar H9 waveform. It stays in procedural
-				idle motion until HR/RR readings arrive, then transitions into the reactive simulated
-				ECG-style visual defined by the new signal engine.
+				This screen is now dedicated to the live Polar H10 ECG waveform. It keeps the same
+				soft monitor treatment, but the live trace is built from raw ECG samples when the belt
+				is streaming.
 			</p>
 		</div>
 
@@ -136,8 +217,7 @@
 				<h2>Streaming waveform surface</h2>
 				<p class="section-copy">
 					The waveform remains honest to the available data: idle motion with no signal,
-					calibration while the first readings arrive, and a stylized ECG-like pulse once the
-					live stream is established.
+					HR/RR fallback while needed, and raw ECG samples once the H10 PMD stream is active.
 				</p>
 			</div>
 			<div class="status-pill">
@@ -169,6 +249,25 @@
 
 		<p class="section-copy status-copy">{sensorStatus}</p>
 
+		<div class="stream-status-grid">
+			<div class="stream-status-card">
+				<p class="metric-label">DEVICE</p>
+				<p class="stream-status-value">{deviceName}</p>
+			</div>
+			<div class="stream-status-card">
+				<p class="metric-label">HEART STREAM</p>
+				<p class="stream-status-value">{heartRateStreamStatus}</p>
+			</div>
+			<div class="stream-status-card">
+				<p class="metric-label">RAW ECG STREAM</p>
+				<p class="stream-status-value">{ecgStreamStatus}</p>
+			</div>
+			<div class="stream-status-card">
+				<p class="metric-label">ECG PACKETS</p>
+				<p class="stream-status-value">{ecgPacketCount} <span>{ecgSampleCount} samples</span></p>
+			</div>
+		</div>
+
 		{#if !canUseBluetooth}
 			<p class="section-copy status-copy">
 				Web Bluetooth is only available in supported browsers like Chrome or Edge over HTTPS or localhost.
@@ -183,7 +282,7 @@
 				</div>
 				<div class="ecg-chip">
 					<span class="material-symbols-outlined">ecg_heart</span>
-					<span>Polar H9</span>
+					<span>Polar H10</span>
 				</div>
 			</div>
 
@@ -191,9 +290,12 @@
 				<HeartWaveform
 					hr={latestHeartRate}
 					rr={latestRrMs}
+					ecgSamples={latestEcgSamples}
+					ecgSampleAtMs={lastEcgPacketAtMs}
+					ecgSampleRateHz={POLAR_H10_ECG_SAMPLE_RATE_HZ}
 					sampleAtMs={lastReadingAtMs}
 					sessionKey={waveformSessionKey}
-					label="Simulated ECG-style waveform"
+					label="Raw ECG waveform"
 				/>
 			</div>
 		</div>
@@ -206,6 +308,15 @@
 			<div class="metric-card">
 				<p class="metric-label">RR INTERVAL</p>
 				<p class="metric-value secondary">{latestRrMs ?? '--'}<span> MS</span></p>
+			</div>
+			<div class="metric-card">
+				<p class="metric-label">RESPIRATORY RATE</p>
+				<p class="metric-value respiratory">{latestRespiration?.breathsPerMinute ?? '--'}<span> BR/MIN</span></p>
+				<p class="metric-subcopy">
+					{latestRespiration
+						? `${latestRespiration.qualityLabel} · ${formatConfidencePercent(latestRespiration.confidence)} confidence · inst ${formatConfidencePercent(latestRespiration.diagnostics.instantConfidence)} · evidence ${formatConfidencePercent(latestRespiration.diagnostics.boostedEvidenceConfidence)} · promote ${formatConfidencePercent(latestRespiration.diagnostics.confidencePromotionProgress)} · stable ${latestRespiration.diagnostics.consecutiveStableSegmentCount}/${latestRespiration.diagnostics.totalSegmentCount} seg · ${latestRespiration.peakCount} peaks`
+						: 'waiting for raw ECG'}
+				</p>
 			</div>
 			<div class="metric-card">
 				<p class="metric-label">CONNECTION</p>
@@ -488,9 +599,35 @@
 		border: 1px solid rgba(160, 174, 197, 0.3);
 	}
 
+	.stream-status-grid {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 0.75rem;
+		margin-top: 0.85rem;
+	}
+
+	.stream-status-card {
+		padding: 0.9rem 1rem;
+		border-radius: 1.2rem;
+		background: rgba(255, 255, 255, 0.72);
+		border: 1px solid rgba(160, 174, 197, 0.3);
+	}
+
+	.stream-status-value {
+		margin: 0.2rem 0 0;
+		color: var(--text);
+		font-size: 1rem;
+		font-weight: 800;
+	}
+
+	.stream-status-value span {
+		color: var(--muted);
+		font-size: 0.78rem;
+	}
+
 	.metric-grid {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 0.85rem;
 		margin-top: 1rem;
 	}
@@ -527,14 +664,31 @@
 		color: var(--tertiary);
 	}
 
+	.metric-value.respiratory {
+		color: #7a2d63;
+	}
+
 	.metric-value span {
 		font-size: 0.9rem;
 		color: var(--muted);
 	}
 
+	.metric-subcopy {
+		margin: 0.2rem 0 0;
+		color: var(--muted);
+		font-size: 0.82rem;
+		font-weight: 800;
+		text-transform: uppercase;
+	}
+
 	@media (max-width: 1100px) {
 		.hero {
 			grid-template-columns: 1fr;
+		}
+
+		.stream-status-grid,
+		.metric-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 
@@ -544,6 +698,10 @@
 		}
 
 		.metric-grid {
+			grid-template-columns: 1fr;
+		}
+
+		.stream-status-grid {
 			grid-template-columns: 1fr;
 		}
 

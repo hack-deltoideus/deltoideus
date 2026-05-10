@@ -2,12 +2,14 @@
 
 ## Hackathon MVP: Study Buddy Stress Score
 
-Study Buddy combines quick self check-ins with Polar H9/H10 heart-rate and RR data to spot rising stress during seated study sessions and trigger a gentle recovery prompt.
+Study Buddy combines quick self check-ins with Polar H9/H10 heart-rate data and Polar H10 raw ECG data to spot rising stress during seated study sessions and trigger a gentle recovery prompt.
 
 ## MVP scope
 
 - Connect to a Polar H9 over Bluetooth LE (Web Bluetooth)
 - Display live heart rate and RR interval
+- Stream raw Polar H10 ECG and render it in a live monitor view
+- Estimate respiratory rate from raw ECG
 - Persist one timestamped JSON summary per sensor session into Supabase, including average heart rate and RR variability
 - Attach each check-in to the active sensor session when one exists
 - Sign in with Supabase OAuth so each user sees only their own sessions and check-ins
@@ -18,7 +20,7 @@ Study Buddy combines quick self check-ins with Polar H9/H10 heart-rate and RR da
 ## Stack
 
 - SvelteKit + TypeScript
-- Web Bluetooth API for Polar H9 heart-rate stream
+- Web Bluetooth API for Polar H9/H10 heart-rate stream and Polar H10 PMD ECG stream
 - Supabase Postgres (and optional Auth later)
 
 ## Quick start
@@ -54,6 +56,27 @@ Set these values in `.env`:
 ```bash
 npm run dev -- --open
 ```
+
+## Live biosignal features
+
+- `/app/sensor` shows the live stress monitor, including respiratory rate when raw Polar H10 ECG is available
+- `/app/ecg` shows the dedicated ECG monitor view with:
+  - heart rate
+  - RR interval
+  - HRV
+  - respiratory rate
+  - raw ECG stream status
+
+## Polar H10 raw ECG
+
+The app supports raw ECG streaming from the Polar H10 over the Polar PMD service.
+
+- ECG sample rate: `130 Hz`
+- waveform display uses a rolling raw sample window
+- respiratory rate is estimated from the same ECG stream using QRS amplitude, baseline drift, and RR interval variation
+- confidence is time-aware: stable segment history can promote confidence over longer runs instead of relying only on the latest packet
+
+Implementation notes are documented in [ecg-waveform-replication.md](/c:/Users/1234c/deltoideus/ecg-waveform-replication.md:1).
 
 ## Deploy on Render
 
@@ -94,9 +117,10 @@ Start Command: npm run start
 
 ## Demo script (60 seconds)
 
-1. Connect Polar H9 (or click `Simulate Spike`)
+1. Connect Polar H9/H10 (or click `Simulate Spike`)
 2. Start a study session and let the RMSSD baseline settle
 3. Show stress-score state changes in real time
+4. Open the ECG monitor and show the live raw Polar H10 waveform plus respiratory rate
 4. Save check-in to Supabase
 5. Show inserted rows in `check_ins` and `interventions`
 

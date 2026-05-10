@@ -13,7 +13,6 @@
 		markSharedDetectionFeedback,
 		resetSharedDetectionTuning,
 		sensorSession,
-		simulateSharedSpike,
 		startSharedSession,
 		type BodyLoadConfidence,
 		type BodyLoadFeedbackLabel,
@@ -22,6 +21,7 @@
 		type RobustMetricRange,
 		type SavedDiagnosticSession
 	} from '$lib/sensor-session';
+	import type { RespiratoryRateEstimate } from '$lib/respiration';
 	import { hasSupabaseConfig, supabase } from '$lib/supabase';
 	import type { Session, User } from '@supabase/supabase-js';
 
@@ -42,6 +42,9 @@
 	let heartRate = $state<number | undefined>(undefined);
 	let rrMs = $state<number | undefined>(undefined);
 	let hrvMs = $state<number | undefined>(undefined);
+	let latestEcgSamples = $state<number[] | null>(null);
+	let lastEcgPacketAtMs = $state<number | null>(null);
+	let respiratoryRate = $state<RespiratoryRateEstimate | null>(null);
 	let baselineRmssdMs = $state<number | undefined>(undefined);
 	let baselineRmssdRange = $state<RobustMetricRange | null>(null);
 	let baselineHeartRateRange = $state<RobustMetricRange | null>(null);
@@ -72,6 +75,7 @@
 	let diagnosticStatus = $state('');
 	let isLoadingDiagnostics = $state(false);
 	let showSessionSummaryModal = $state(false);
+	let showScoreDetailsModal = $state(false);
 	let activePanel = $state<'ecg' | 'sessions'>('ecg');
 	let waveformSessionKey = $state(0);
 	let nowMs = $state(Date.now());
@@ -96,6 +100,9 @@
 			heartRate = state.heartRate;
 			rrMs = state.rrMs;
 			hrvMs = state.hrvMs;
+			latestEcgSamples = state.latestEcgSamples;
+			lastEcgPacketAtMs = state.lastEcgPacketAtMs;
+			respiratoryRate = state.respiratoryRate;
 			baselineRmssdMs = state.baselineRmssdMs;
 			baselineRmssdRange = state.baselineRmssdRange;
 			baselineHeartRateRange = state.baselineHeartRateRange;
@@ -342,12 +349,16 @@
 		showSessionSummaryModal = false;
 	}
 
-	async function disconnectSensor() {
-		await disconnectSharedSensor();
+	function openScoreDetailsModal() {
+		showScoreDetailsModal = true;
 	}
 
-	function simulateSpike() {
-		simulateSharedSpike();
+	function closeScoreDetailsModal() {
+		showScoreDetailsModal = false;
+	}
+
+	async function disconnectSensor() {
+		await disconnectSharedSensor();
 	}
 
 	function formatSignedPercent(value: number | undefined): string {
@@ -374,38 +385,6 @@
 		const minutes = Math.floor(seconds / 60);
 		const remainder = seconds % 60;
 		return remainder > 0 ? `${minutes}m ${remainder}s` : `${minutes}m`;
-	}
-
-	function bodyLoadHeadline(status: BodyLoadState): string {
-		if (status === 'settling') {
-			return 'Building your stress baseline';
-		}
-
-		if (status === 'activated') {
-			return 'Stress score is elevated';
-		}
-
-		if (status === 'recovering') {
-			return 'Recovery signal is improving';
-		}
-
-		return 'Stress score is steady';
-	}
-
-	function bodyLoadCopy(status: BodyLoadState): string {
-		if (status === 'settling') {
-			return `Stay settled for ${baselineCaptureSeconds} seconds so we can compare this study block against your own baseline.`;
-		}
-
-		if (status === 'activated') {
-			return 'Your score has stayed elevated long enough to be worth a quick check-in or reset.';
-		}
-
-		if (status === 'recovering') {
-			return 'Your current window is moving back toward baseline. Stay with the reset or slower pace that is helping.';
-		}
-
-		return 'Your current pattern is close enough to your study-session baseline for steady work.';
 	}
 
 	function labelBodyLoad(label: BodyLoadFeedbackLabel) {
@@ -510,194 +489,9 @@
 		<section class="grid">
 			<article class="sensor-card">
 				<div class="section-heading">
-					<div>
-						<p class="eyebrow">Live Sensor</p>
-						<h2>Stress score monitor</h2>
-					</div>
 					<div class="live-indicator">
 						<span class:dot-live={isSensorConnected} class="live-dot"></span>
 						<span>{isSensorConnected ? 'Live' : 'Standby'}</span>
-					</div>
-				</div>
-
-				<div class="rmssd-hero diagnosis-{bodyLoadState}">
-					<p class="rmssd-kicker">Stress signal</p>
-					<h3>{bodyLoadHeadline(bodyLoadState)}</h3>
-					<p class="rmssd-copy">{bodyLoadCopy(bodyLoadState)}</p>
-
-					<div class="metric-grid rmssd-grid">
-						<div class="metric-card">
-							<p class="metric-label">STRESS SCORE</p>
-							<p class="metric-value">{bodyLoadScore}<span>/100</span></p>
-						</div>
-						<div class="metric-card">
-							<p class="metric-label">BURNOUT SCORE</p>
-							<p class="metric-value secondary">{burnoutScore}<span>/100</span></p>
-						</div>
-						<div class="metric-card">
-							<p class="metric-label">ELEVATED TIME</p>
-							<p class="metric-value secondary">{formatDurationShort(sustainedStressSeconds)}</p>
-						</div>
-						<div class="metric-card">
-							<p class="metric-label">SIGNAL QUALITY</p>
-							<p class="metric-value">{signalQualityLevel}</p>
-						</div>
-					</div>
-
-					<div class="baseline-panel">
-						<div class="baseline-row">
-							<p class="saved-title">Baseline capture</p>
-							<p class="baseline-progress">{baselineProgressPercent.toFixed(0)}% of {baselineCaptureSeconds}s</p>
-						</div>
-						<div class="baseline-track">
-							<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
-						</div>
-						<p class="saved-copy">
-							We capture your baseline for the first {baselineCaptureSeconds} seconds, then compare your current {diagnosisWindowSeconds}-second window against it. This is not a diagnosis.
-						</p>
-					</div>
-
-					<details class="score-details">
-						<summary>
-							<span class="material-symbols-outlined">help</span>
-							<span>How this score works</span>
-						</summary>
-						<div class="metric-grid rmssd-grid">
-							<div class="metric-card">
-								<p class="metric-label">BASELINE HRV BAND</p>
-								<p class="metric-value secondary">{formatRange(baselineRmssdRange, 'MS')}</p>
-							</div>
-							<div class="metric-card">
-								<p class="metric-label">BASELINE HR BAND</p>
-								<p class="metric-value secondary">{formatRange(baselineHeartRateRange, 'BPM')}</p>
-							</div>
-							<div class="metric-card">
-								<p class="metric-label">CURRENT HRV</p>
-								<p class="metric-value secondary">{currentRmssdMs ?? '--'} <span>MS</span></p>
-							</div>
-							<div class="metric-card">
-								<p class="metric-label">BASELINE CHANGE</p>
-								<p class="metric-value secondary">{formatSignedPercent(rmssdDeltaPercent)}</p>
-							</div>
-						</div>
-						<p class="saved-copy">
-							Study Buddy uses Polar RR intervals to estimate HRV with RMSSD, compares it with a robust personal baseline band, checks heart-rate drift, and waits for a sustained change before raising the score.
-						</p>
-					</details>
-				</div>
-
-				<!--<div class="metric-grid">
-					<div class="metric-card">
-						<p class="metric-label">HEART RATE</p>
-						<p class="metric-value">{heartRate ?? '--'} <span>BPM</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">STRESS SCORE</p>
-						<p class="metric-value secondary">{bodyLoadScore}<span>/100</span></p>
-					</div>
-					<div class="metric-card">
-						<p class="metric-label">BURNOUT SCORE</p>
-						<p class="metric-value secondary">{burnoutScore}<span>/100</span></p>
-					</div>
-				</div>-->
-
-				<div class="action-stack">
-					<button class="button" onclick={connectSensor} disabled={!canUseBluetooth || isConnecting || isSensorConnected}>
-						<span class="material-symbols-outlined">bluetooth</span>
-						<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
-					</button>
-
-					<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser || !isSensorConnected}>
-						<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
-						<span>
-							{sessionStartedAt
-								? isSavingSession
-									? 'Ending Session...'
-									: 'End Session'
-								: 'Start Session'}
-						</span>
-					</button>
-
-					<div class="inline-buttons"style={isSensorConnected ? 'display: block' : 'display: none'}>
-						<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
-							Disconnect
-						</button>
-						<!--<button class="button button-subtle" onclick={simulateSpike}>Simulate Spike</button>-->
-					</div>
-
-					<div class="feedback-buttons" style={sessionStartedAt ? 'display: block' : 'display: none'}>
-						<button class="button button-subtle" onclick={() => labelBodyLoad('felt_stressed')} disabled={!sessionStartedAt}>
-							Felt stressful
-						</button>
-						<button class="button button-subtle" onclick={() => labelBodyLoad('normal_focus')} disabled={!sessionStartedAt}>
-							Normal focus
-						</button>
-						<button class="button button-subtle" onclick={() => labelBodyLoad('caffeine_illness_sleep')} disabled={!sessionStartedAt}>
-							Caffeine / sleep / illness
-						</button>
-						<button class="button button-subtle" onclick={resetDetectionTuning} disabled={!sessionStartedAt}>
-							Reset threshold
-						</button>
-					</div>
-				</div>
-
-				{#if bodyLoadState === 'activated'}
-					<div class="break-cta-panel">
-						<p class="saved-title">Reset recommended</p>
-						<p class="saved-copy">
-							Your stress score has stayed elevated for this study session. A short reset can help you recover before pushing further.
-						</p>
-						<a class="button button-break" href="/app/recovery">
-							<span class="material-symbols-outlined">spa</span>
-							<span>Open recovery tools</span>
-						</a>
-					</div>
-				{/if}
-
-				<p class="section-copy">{sensorStatus}</p>
-
-				<div class="saved-panel">
-					<div class:active={Boolean(sessionStartedAt)} class="recording-banner">
-						<span class:dot-live={Boolean(sessionStartedAt)} class="recording-dot"></span>
-						<span>{sessionStartedAt ? 'Recording in progress' : 'No active recording'}</span>
-					</div>
-					<p class="saved-title">Session status</p>
-					<div class="saved-metrics">
-						<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
-						<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
-						<span>{sessionSamples.length} captured samples</span>
-						<span>{activationEventCount} activation events</span>
-						<span>{feedbackCount} labels saved</span>
-					</div>
-				</div>
-
-				{#if lastSavedDiagnosticSession}
-					<div class="saved-panel">
-						<p class="saved-title">Last diagnostic session</p>
-						<div class="saved-metrics">
-							<span>{lastSavedDiagnosticSession.capture_type ?? 'polar_h9_hr_hrv'}</span>
-							<span>{lastSavedDiagnosticSession.sample_count} samples</span>
-							<span>{lastSavedDiagnosticSession.duration_seconds ?? 0}s</span>
-							<span>Avg HR {formatMetric(lastSavedDiagnosticSession.avg_heart_rate)}</span>
-							<span>Stress {formatMetric(lastSavedDiagnosticSession.summary_payload?.bodyLoadScore, 0)}/100</span>
-							<span>Burnout {formatMetric(lastSavedDiagnosticSession.summary_payload?.burnoutScore, 0)}/100</span>
-						</div>
-						<p class="saved-copy">
-							Started {new Date(lastSavedDiagnosticSession.started_at).toLocaleString()} on {lastSavedDiagnosticSession.device_name ?? 'Polar H9'}.
-						</p>
-					</div>
-				{/if}
-
-				{#if !canUseBluetooth}
-					<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
-				{/if}
-			</article>
-
-			<article class="data-card">
-				<div class="section-heading">
-					<div>
-						<p class="eyebrow">{activePanel === 'ecg' ? 'Live Monitor' : 'Saved Sessions'}</p>
-						<h2>{activePanel === 'ecg' ? 'Streaming waveform surface' : 'Session data explorer'}</h2>
 					</div>
 					<div class="panel-controls">
 						{#if isLoadingDiagnostics}
@@ -727,28 +521,141 @@
 				<div class="data-layout">
 					{#if activePanel === 'ecg'}
 						<div class="viewer-stack">
-							<div class="ecg-card">
-								<div class="ecg-card-header">
-									<div>
-										<p class="eyebrow">Waveform</p>
-										<h3>Live ECG waveform</h3>
+							<div class="monitor-top-row diagnosis-{bodyLoadState}">
+								<div class="metrics-panel">
+									<div class="metric-grid rmssd-grid">
+										<div class="metric-card">
+											<p class="metric-label">STRESS SCORE</p>
+											<p class="metric-value">
+												{isSensorConnected ? bodyLoadScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
+											</p>
+										</div>
+										<div class="metric-card">
+											<p class="metric-label">BURNOUT SCORE</p>
+											<p class="metric-value secondary">
+												{isSensorConnected ? burnoutScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
+											</p>
+										</div>
+										<div class="metric-card">
+											<p class="metric-label">RESPIRATORY RATE</p>
+											<p class="metric-value respiratory">{respiratoryRate?.breathsPerMinute ?? '--'}<span> BR/MIN</span></p>
+										</div>
+										<div class="metric-card tag-card">
+											<p class="metric-label">ELEVATED TIME</p>
+											<p class="metric-value secondary">{isSensorConnected ? formatDurationShort(sustainedStressSeconds) : '--'}</p>
+										</div>
+										<div class="metric-card tag-card">
+											<p class="metric-label">SIGNAL QUALITY</p>
+											<p class="metric-value">{isSensorConnected ? signalQualityLevel : '--'}</p>
+										</div>
 									</div>
-									<div class="ecg-chip">
-										<span class="material-symbols-outlined">ecg_heart</span>
-										<span>{sessionDeviceName ?? 'Polar H9'}</span>
+
+									<div class="baseline-strip">
+										<div class="baseline-row">
+											<p class="saved-title">Baseline capture</p>
+											<p class="baseline-progress">{baselineProgressPercent.toFixed(0)}% of {baselineCaptureSeconds}s</p>
+										</div>
+										<div class="baseline-track">
+											<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
+										</div>
 									</div>
 								</div>
 
+								<div class="baseline-panel">
+									<button class="score-help-button" type="button" onclick={openScoreDetailsModal}>
+											<span class="material-symbols-outlined">help</span>
+											<span>How this score works</span>
+									</button>
+
+									<div class="action-stack">
+										<button class="button" onclick={connectSensor} disabled={!canUseBluetooth || isConnecting || isSensorConnected}>
+											<span class="material-symbols-outlined">bluetooth</span>
+											<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
+										</button>
+
+										<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser || !isSensorConnected}>
+											<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
+											<span>
+												{sessionStartedAt
+													? isSavingSession
+														? 'Ending Session...'
+														: 'End Session'
+													: 'Start Session'}
+											</span>
+										</button>
+
+										{#if isSensorConnected}
+											<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
+												Disconnect
+											</button>
+										{/if}
+									</div>
+
+									{#if !canUseBluetooth}
+										<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
+									{/if}
+								</div>
+							</div>
+
+							<div class="ecg-card">
 								<div class="monitor-shell">
 									<HeartWaveform
 										hr={heartRate ?? null}
 										rr={rrMs ?? null}
+										ecgSamples={latestEcgSamples}
+										ecgSampleAtMs={lastEcgPacketAtMs}
 										sampleAtMs={lastReadingAtMs}
 										sessionKey={waveformSessionKey}
-										label="Simulated waveform"
+										label="Raw ECG waveform"
+										showMeta={false}
 									/>
 								</div>
 							</div>
+
+							<div class="saved-panel session-status-panel">
+								<div class:active={Boolean(sessionStartedAt)} class="recording-banner">
+									<span class:dot-live={Boolean(sessionStartedAt)} class="recording-dot"></span>
+									<span>{sessionStartedAt ? 'Recording in progress' : 'No active recording'}</span>
+								</div>
+								<p class="saved-title">Session status</p>
+								<div class="saved-metrics">
+									<span>{sessionStartedAt ? 'Session is live' : 'Waiting to start'}</span>
+									<span>Started {formatFullTimestamp(sessionStartedAt)}</span>
+									<span>{sessionSamples.length} captured samples</span>
+									<span>{activationEventCount} activation events</span>
+									<span>{feedbackCount} labels saved</span>
+								</div>
+							</div>
+
+							{#if sessionStartedAt}
+								<div class="feedback-buttons">
+									<button class="button button-subtle" onclick={() => labelBodyLoad('felt_stressed')} disabled={!sessionStartedAt}>
+										Felt stressful
+									</button>
+									<button class="button button-subtle" onclick={() => labelBodyLoad('normal_focus')} disabled={!sessionStartedAt}>
+										Normal focus
+									</button>
+									<button class="button button-subtle" onclick={() => labelBodyLoad('caffeine_illness_sleep')} disabled={!sessionStartedAt}>
+										Caffeine / sleep / illness
+									</button>
+									<button class="button button-subtle" onclick={resetDetectionTuning} disabled={!sessionStartedAt}>
+										Reset threshold
+									</button>
+								</div>
+							{/if}
+
+							{#if bodyLoadState === 'activated'}
+								<div class="break-cta-panel">
+									<p class="saved-title">Reset recommended</p>
+									<p class="saved-copy">
+										Your stress score has stayed elevated for this study session. A short reset can help you recover before pushing further.
+									</p>
+									<a class="button button-break" href="/app/recovery">
+										<span class="material-symbols-outlined">spa</span>
+										<span>Open recovery tools</span>
+									</a>
+								</div>
+							{/if}
 
 							{#if lastSavedDiagnosticSession}
 								<div class="saved-panel data-summary">
@@ -771,7 +678,7 @@
 										<span class="session-index">S{index + 1}</span>
 										<span class="session-item-date">{formatSessionDate(session.started_at)}</span>
 										<span class="session-item-meta">
-											{formatMetric(session.avg_heart_rate)} bpm · stress {formatMetric(session.summary_payload?.bodyLoadScore, 0)}/100
+											{formatMetric(session.avg_heart_rate)} bpm - stress {formatMetric(session.summary_payload?.bodyLoadScore, 0)}/100
 										</span>
 									</button>
 									<button class="session-delete" type="button" onclick={() => deleteDiagnosticSession(session)}>
@@ -786,82 +693,127 @@
 
 					{#if activePanel === 'sessions'}
 						{#if diagnosticStatus}
-						<p class="inline-status">{diagnosticStatus}</p>
+							<p class="inline-status">{diagnosticStatus}</p>
 						{/if}
 
 						{#if selectedDiagnosticSession}
-						<div class="saved-panel data-summary">
-							<p class="saved-title">Selected session</p>
-							<div class="saved-metrics">
-								<span>{formatSessionDate(selectedDiagnosticSession.started_at)}</span>
-								<span>{selectedDiagnosticSession.duration_seconds ?? 0}s</span>
-								<span>{selectedDiagnosticSession.sample_count} samples</span>
-								<span>{selectedDiagnosticSession.device_name ?? 'Polar H9'}</span>
+							<div class="saved-panel data-summary">
+								<p class="saved-title">Selected session</p>
+								<div class="saved-metrics">
+									<span>{formatSessionDate(selectedDiagnosticSession.started_at)}</span>
+									<span>{selectedDiagnosticSession.duration_seconds ?? 0}s</span>
+									<span>{selectedDiagnosticSession.sample_count} samples</span>
+									<span>{selectedDiagnosticSession.device_name ?? 'Polar H9'}</span>
+								</div>
+
+								<div class="metric-grid compact">
+									<div class="metric-card">
+										<p class="metric-label">AVG HEART RATE</p>
+										<p class="metric-value">{formatMetric(selectedDiagnosticSession.avg_heart_rate, 1)} <span>BPM</span></p>
+									</div>
+									<div class="metric-card">
+										<p class="metric-label">STRESS SCORE</p>
+										<p class="metric-value secondary">{formatMetric(selectedDiagnosticSession.summary_payload?.bodyLoadScore, 0)} <span>/100</span></p>
+									</div>
+									<div class="metric-card">
+										<p class="metric-label">BURNOUT SCORE</p>
+										<p class="metric-value secondary">{formatMetric(selectedDiagnosticSession.summary_payload?.burnoutScore, 0)} <span>/100</span></p>
+									</div>
+									<div class="metric-card">
+										<p class="metric-label">MAX HEART RATE</p>
+										<p class="metric-value">{formatMetric(selectedDiagnosticSession.max_heart_rate)} <span>BPM</span></p>
+									</div>
+								</div>
+
+								<p class="saved-copy">Raw JSON file: {selectedDiagnosticSession.raw_data_path ?? 'Not available'}</p>
 							</div>
 
-							<div class="metric-grid compact">
-								<div class="metric-card">
-									<p class="metric-label">AVG HEART RATE</p>
-									<p class="metric-value">{formatMetric(selectedDiagnosticSession.avg_heart_rate, 1)} <span>BPM</span></p>
+							<div class="segment-panel">
+								<div class="section-heading segment-head">
+									<div>
+										<p class="saved-title">Segmented data</p>
+										<p class="inline-hint">
+											{selectedDiagnosticSession.summary_payload?.segmentLengthSeconds ?? 0}s windows
+										</p>
+									</div>
 								</div>
-								<div class="metric-card">
-									<p class="metric-label">STRESS SCORE</p>
-									<p class="metric-value secondary">{formatMetric(selectedDiagnosticSession.summary_payload?.bodyLoadScore, 0)} <span>/100</span></p>
-								</div>
-								<div class="metric-card">
-									<p class="metric-label">BURNOUT SCORE</p>
-									<p class="metric-value secondary">{formatMetric(selectedDiagnosticSession.summary_payload?.burnoutScore, 0)} <span>/100</span></p>
-								</div>
-								<div class="metric-card">
-									<p class="metric-label">MAX HEART RATE</p>
-									<p class="metric-value">{formatMetric(selectedDiagnosticSession.max_heart_rate)} <span>BPM</span></p>
-								</div>
-							</div>
 
-							<p class="saved-copy">Raw JSON file: {selectedDiagnosticSession.raw_data_path ?? 'Not available'}</p>
-						</div>
-
-						<div class="segment-panel">
-							<div class="section-heading segment-head">
-								<div>
-									<p class="saved-title">Segmented data</p>
-									<p class="inline-hint">
-										{selectedDiagnosticSession.summary_payload?.segmentLengthSeconds ?? 0}s windows
-									</p>
-								</div>
-							</div>
-
-							{#if selectedDiagnosticSession.summary_payload?.segments.length}
-								<div class="segment-grid">
-									{#each selectedDiagnosticSession.summary_payload.segments as segment}
-										<div class="segment-card">
-											<div class="segment-header">
-												<p class="segment-title">Segment {segment.index}</p>
-												<p class="segment-time">{formatSessionDate(segment.startedAt)}</p>
+								{#if selectedDiagnosticSession.summary_payload?.segments.length}
+									<div class="segment-grid">
+										{#each selectedDiagnosticSession.summary_payload.segments as segment}
+											<div class="segment-card">
+												<div class="segment-header">
+													<p class="segment-title">Segment {segment.index}</p>
+													<p class="segment-time">{formatSessionDate(segment.startedAt)}</p>
+												</div>
+												<div class="segment-metrics">
+													<span>Avg HR {formatMetric(segment.averageHeartRate, 1)} bpm</span>
+													<span>{formatDurationShort(segment.durationSeconds)}</span>
+													<span>{segment.sampleCount} samples</span>
+												</div>
 											</div>
-											<div class="segment-metrics">
-												<span>Avg HR {formatMetric(segment.averageHeartRate, 1)} bpm</span>
-												<span>{formatDurationShort(segment.durationSeconds)}</span>
-												<span>{segment.sampleCount} samples</span>
-											</div>
-										</div>
-									{/each}
-								</div>
-							{:else}
-								<p class="inline-hint">No segment summary is available for this session yet.</p>
-							{/if}
-						</div>
+										{/each}
+									</div>
+								{:else}
+									<p class="inline-hint">No segment summary is available for this session yet.</p>
+								{/if}
+							</div>
 						{:else}
-						<div class="saved-panel data-summary">
-							<p class="saved-title">No data selected</p>
-							<p class="saved-copy">Choose a saved session to inspect its summary JSON and segment metrics.</p>
-						</div>
+							<div class="saved-panel data-summary">
+								<p class="saved-title">No data selected</p>
+								<p class="saved-copy">Choose a saved session to inspect its summary JSON and segment metrics.</p>
+							</div>
 						{/if}
 					{/if}
 				</div>
 			</article>
 		</section>
 	</main>
+
+	{#if showScoreDetailsModal}
+		<div class="modal-backdrop">
+			<button class="modal-scrim" type="button" aria-label="Close score details" onclick={closeScoreDetailsModal}></button>
+			<div
+				class="score-modal"
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="score-modal-title"
+			>
+				<div class="modal-header">
+					<div>
+						<p class="eyebrow">Score Details</p>
+						<h2 id="score-modal-title">How this score works</h2>
+					</div>
+					<button class="modal-close" type="button" aria-label="Close score details" onclick={closeScoreDetailsModal}>
+						<span class="material-symbols-outlined">close</span>
+					</button>
+				</div>
+
+				<p class="saved-copy">
+					We capture your baseline for the first {baselineCaptureSeconds} seconds, then compare your current {diagnosisWindowSeconds}-second window against it. This is not a diagnosis.
+				</p>
+
+				<div class="metric-grid compact modal-metrics">
+					<div class="metric-card">
+						<p class="metric-label">BASELINE HRV BAND</p>
+						<p class="metric-value secondary">{formatRange(baselineRmssdRange, 'MS')}</p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">BASELINE HR BAND</p>
+						<p class="metric-value secondary">{formatRange(baselineHeartRateRange, 'BPM')}</p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">CURRENT HRV</p>
+						<p class="metric-value secondary">{currentRmssdMs ?? '--'} <span>MS</span></p>
+					</div>
+					<div class="metric-card">
+						<p class="metric-label">BASELINE CHANGE</p>
+						<p class="metric-value secondary">{formatSignedPercent(rmssdDeltaPercent)}</p>
+					</div>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	<SensorSessionSummaryModal
 		open={showSessionSummaryModal}
@@ -975,16 +927,18 @@
 		color: var(--on-surface-variant);
 	}
 
-	h1,
-	h2 {
-		margin: 0;
-	}
-
 	h1 {
+		margin: 0;
 		font-size: clamp(2.5rem, 6vw, 4.8rem);
 		line-height: 0.96;
 		letter-spacing: -0.05em;
 		color: var(--primary);
+	}
+
+	h2 {
+		margin: 0;
+		font-size: clamp(1.45rem, 2.5vw, 2rem);
+		line-height: 1.05;
 	}
 
 	.hero-copy,
@@ -1009,7 +963,7 @@
 
 	.grid {
 		display: grid;
-		grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+		grid-template-columns: minmax(0, 1fr);
 		gap: 1.2rem;
 		margin-top: 1.25rem;
 	}
@@ -1126,7 +1080,7 @@
 	}
 
 	.rmssd-grid {
-		grid-template-columns: repeat(4, minmax(0, 1fr));
+		grid-template-columns: repeat(5, minmax(0, 1fr));
 	}
 
 	.metric-grid.compact {
@@ -1142,7 +1096,11 @@
 
 	.metric-card {
 		padding: 1rem;
-		background: color-mix(in srgb, var(--surface-container, #dce9ff) 68%, white);
+		border: 1px solid #c9deff;
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 75%, white);
+		box-shadow:
+			0 8px 0 0 #dce9ff,
+			0 10px 24px rgba(33, 47, 66, 0.08);
 	}
 
 	.break-cta-panel {
@@ -1196,12 +1154,6 @@
 		color: var(--on-surface-variant);
 	}
 
-	.rmssd-hero h3 {
-		margin: 0.35rem 0 0;
-		font-size: 1.8rem;
-		line-height: 1.05;
-	}
-
 	.rmssd-copy {
 		margin: 0.65rem 0 0;
 		color: var(--on-surface-variant);
@@ -1236,25 +1188,24 @@
 		background: linear-gradient(135deg, var(--primary), #128d7f);
 	}
 
-	.score-details {
-		margin-top: 1rem;
-	}
-
-	.score-details summary {
+	.score-help-button {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.45rem;
+		width: fit-content;
+		margin-top: 0;
+		padding: 0.7rem 0.85rem;
+		border: 1px solid rgba(160, 174, 197, 0.3);
+		border-radius: 1rem;
+		background: rgba(255, 255, 255, 0.72);
 		cursor: pointer;
+		font: inherit;
 		font-weight: 800;
 		color: var(--primary);
 	}
 
-	.score-details summary::-webkit-details-marker {
-		display: none;
-	}
-
-	.score-details[open] summary {
-		margin-bottom: 0.85rem;
+	.score-help-button:hover {
+		background: rgba(255, 255, 255, 0.92);
 	}
 
 	.feedback-buttons {
@@ -1275,10 +1226,90 @@
 		gap: 1rem;
 	}
 
+	.monitor-top-row {
+		display: grid;
+		grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
+		gap: 1rem;
+		align-items: start;
+		padding: 1.15rem;
+		border-radius: 1.5rem;
+		border: 1px solid rgba(160, 174, 197, 0.26);
+		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 78%, white);
+	}
+
+	.monitor-top-row .baseline-panel {
+		margin-top: 0;
+	}
+
+	.metrics-panel {
+		display: grid;
+		gap: 0.9rem;
+		max-width: 46rem;
+	}
+
+	.metrics-panel .metric-grid {
+		margin-top: 0;
+	}
+
+	.monitor-top-row .rmssd-grid {
+		grid-template-columns: repeat(6, minmax(0, 1fr));
+	}
+
+	.monitor-top-row .metric-card:not(.tag-card) {
+		grid-column: span 2;
+	}
+
+	.monitor-top-row .tag-card {
+		grid-column: span 3;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		min-height: 3.5rem;
+		padding: 0.72rem 0.9rem;
+		border-radius: 1.2rem;
+		box-shadow:
+			0 5px 0 0 #dce9ff,
+			0 8px 18px rgba(33, 47, 66, 0.07);
+	}
+
+	.tag-card .metric-label {
+		margin: 0;
+		font-size: 0.68rem;
+		letter-spacing: 0.1em;
+	}
+
+	.tag-card .metric-value {
+		margin: 0;
+		font-size: 1.15rem;
+		letter-spacing: 0;
+		white-space: nowrap;
+	}
+
+	.baseline-strip {
+		padding: 0.9rem 1rem;
+		border-radius: 1.15rem;
+		background: rgba(255, 255, 255, 0.7);
+		border: 1px solid rgba(160, 174, 197, 0.28);
+	}
+
+	.monitor-top-row .baseline-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		align-self: stretch;
+		background: rgba(255, 255, 255, 0.68);
+		border: 1px solid rgba(160, 174, 197, 0.28);
+	}
+
 	.ecg-card {
 		padding: 1.4rem;
 		border-radius: 1.8rem;
 		background: linear-gradient(180deg, #dce9ff 0%, #eaf1ff 100%);
+	}
+
+	.ecg-card > .monitor-shell {
+		margin-top: 0;
 	}
 
 	.ecg-card-header {
@@ -1321,6 +1352,74 @@
 
 	.secondary {
 		color: var(--primary);
+	}
+
+	.respiratory {
+		color: #7a2d63;
+	}
+
+	.metric-subcopy {
+		margin: 0.2rem 0 0;
+		color: var(--on-surface-variant);
+		font-size: 0.76rem;
+		font-weight: 800;
+		line-height: 1.35;
+		text-transform: uppercase;
+	}
+
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 50;
+		display: grid;
+		place-items: center;
+		padding: 1.2rem;
+	}
+
+	.modal-scrim {
+		position: absolute;
+		inset: 0;
+		border: 0;
+		background: rgba(9, 21, 33, 0.48);
+		backdrop-filter: blur(8px);
+		cursor: pointer;
+	}
+
+	.score-modal {
+		position: relative;
+		z-index: 1;
+		width: min(100%, 44rem);
+		max-height: min(90vh, 44rem);
+		overflow: auto;
+		padding: 1.35rem;
+		border-radius: 1.8rem;
+		border: 1px solid var(--panel-border);
+		background: var(--panel-bg);
+		box-shadow: var(--shadow-soft);
+	}
+
+	.modal-header {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.modal-close {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.6rem;
+		height: 2.6rem;
+		border: 1px solid rgba(160, 174, 197, 0.32);
+		border-radius: 1rem;
+		background: rgba(255, 255, 255, 0.72);
+		color: var(--on-surface);
+		cursor: pointer;
+	}
+
+	.modal-metrics {
+		margin-top: 1rem;
 	}
 
 	.action-stack {
@@ -1515,14 +1614,9 @@
 		line-height: 1.6;
 	}
 
-	h3 {
-		margin: 0.2rem 0 0;
-		font-size: clamp(1.3rem, 2vw, 1.8rem);
-		line-height: 1.05;
-	}
-
 	@media (max-width: 1180px) {
-		.grid {
+		.grid,
+		.monitor-top-row {
 			grid-template-columns: 1fr;
 		}
 	}
@@ -1531,8 +1625,14 @@
 		.metric-grid,
 		.metric-grid.compact,
 		.rmssd-grid,
+		.monitor-top-row .rmssd-grid,
 		.feedback-buttons {
 			grid-template-columns: 1fr;
+		}
+
+		.monitor-top-row .metric-card:not(.tag-card),
+		.monitor-top-row .tag-card {
+			grid-column: auto;
 		}
 	}
 
@@ -1550,3 +1650,4 @@
 		}
 	}
 </style>
+

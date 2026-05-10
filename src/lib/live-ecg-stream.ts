@@ -1,7 +1,9 @@
 export type LiveEcgReading = {
-	heartRate: number;
-	rrMs: number;
+	heartRate?: number;
+	rrMs?: number;
 	receivedAtMs: number;
+	ecgSamplesMicrovolts?: number[];
+	ecgSampleRateHz?: number;
 };
 
 const CHANNEL_NAME = 'sanctuary-live-ecg';

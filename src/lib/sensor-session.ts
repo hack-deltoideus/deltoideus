@@ -1,5 +1,13 @@
 import { browser } from '$app/environment';
-import { connectHeartRateMonitor } from '$lib/polar';
+import {
+	connectPolarMonitor,
+	POLAR_H10_ECG_SAMPLE_RATE_HZ,
+	type PolarMonitorConnection
+} from '$lib/polar';
+import {
+	RespiratoryRateEstimator,
+	type RespiratoryRateEstimate
+} from '$lib/respiration';
 import { supabase } from '$lib/supabase';
 import { get, writable } from 'svelte/store';
 
@@ -146,6 +154,13 @@ type SensorSessionState = {
 	heartRate: number | undefined;
 	rrMs: number | undefined;
 	hrvMs: number | undefined;
+	latestEcgSamples: number[] | null;
+	lastEcgPacketAtMs: number | null;
+	ecgPacketCount: number;
+	ecgSampleCount: number;
+	heartRateStreamStatus: string;
+	ecgStreamStatus: string;
+	respiratoryRate: RespiratoryRateEstimate | null;
 	baselineRmssdMs: number | undefined;
 	baselineRmssdRange: RobustMetricRange;
 	baselineHeartRateRange: RobustMetricRange;
@@ -186,6 +201,13 @@ const initialState: SensorSessionState = {
 	heartRate: undefined,
 	rrMs: undefined,
 	hrvMs: undefined,
+	latestEcgSamples: null,
+	lastEcgPacketAtMs: null,
+	ecgPacketCount: 0,
+	ecgSampleCount: 0,
+	heartRateStreamStatus: 'Idle',
+	ecgStreamStatus: 'Idle',
+	respiratoryRate: null,
 	baselineRmssdMs: undefined,
 	baselineRmssdRange: {
 		median: null,
@@ -235,7 +257,10 @@ const initialState: SensorSessionState = {
 };
 
 const store = writable<SensorSessionState>(initialState);
-let stopSensor: (() => Promise<void>) | null = null;
+let sensorConnection: PolarMonitorConnection | null = null;
+const respiratoryRateEstimator = new RespiratoryRateEstimator({
+	sampleRateHz: POLAR_H10_ECG_SAMPLE_RATE_HZ
+});
 
 const MIN_VALID_RR_MS = 300;
 const MAX_VALID_RR_MS = 2000;
@@ -951,46 +976,80 @@ export async function connectSharedSensor() {
 	patchState({ isConnecting: true, sensorStatus: 'Connecting...' });
 
 	try {
-		stopSensor = await connectHeartRateMonitor((reading) => {
-			store.update((current) => {
-				const next: SensorSessionState = {
+		const connection = await connectPolarMonitor({
+			onDevice: (name) => {
+				patchState({ sessionDeviceName: name });
+			},
+			onHeartRateStatus: (status) => {
+				patchState({ heartRateStreamStatus: status });
+			},
+			onEcgStatus: (status) => {
+				patchState({ ecgStreamStatus: status });
+			},
+			onDisconnected: () => {
+				sensorConnection = null;
+				patchState({
+					isSensorConnected: false,
+					heartRateStreamStatus: 'Disconnected',
+					ecgStreamStatus: 'Disconnected',
+					sensorStatus: 'Sensor disconnected.'
+				});
+			},
+			onHeartRate: (reading) => {
+				store.update((current) => {
+					const next: SensorSessionState = {
+						...current,
+						heartRate: reading.heartRate,
+						rrMs: reading.rrMs,
+						hrvMs: reading.hrvMs
+					};
+
+					if (current.sessionStartedAt) {
+						const recordedAt = new Date().toISOString();
+						const elapsedMs = Math.max(
+							0,
+							new Date(recordedAt).getTime() - new Date(current.sessionStartedAt).getTime()
+						);
+						next.sessionSamples = [
+							...current.sessionSamples,
+							{
+								recorded_at: recordedAt,
+								elapsed_ms: elapsedMs,
+								heart_rate: reading.heartRate,
+								rr_ms: reading.rrMs ?? null,
+								hrv_ms: reading.hrvMs ?? null,
+								rr_intervals_ms: reading.rrIntervalsMs ?? []
+							}
+						].slice(-MAX_SESSION_SAMPLES);
+
+						Object.assign(next, deriveRmssdState(next));
+					}
+
+					return next;
+				});
+			},
+			onEcgPacket: (packet) => {
+				const samples = packet.samples.map((sample) => sample.microvolts);
+				const estimate = respiratoryRateEstimator.addSamples(samples);
+				store.update((current) => ({
 					...current,
-					heartRate: reading.heartRate,
-					rrMs: reading.rrMs,
-					hrvMs: reading.hrvMs
-				};
-
-				if (current.sessionStartedAt) {
-					const recordedAt = new Date().toISOString();
-					const elapsedMs = Math.max(
-						0,
-						new Date(recordedAt).getTime() - new Date(current.sessionStartedAt).getTime()
-					);
-					next.sessionSamples = [
-						...current.sessionSamples,
-						{
-							recorded_at: recordedAt,
-							elapsed_ms: elapsedMs,
-							heart_rate: reading.heartRate,
-							rr_ms: reading.rrMs ?? null,
-							hrv_ms: reading.hrvMs ?? null,
-							rr_intervals_ms: reading.rrIntervalsMs ?? []
-						}
-					].slice(-MAX_SESSION_SAMPLES);
-
-					Object.assign(next, deriveRmssdState(next));
-				}
-
-				return next;
-			});
+					latestEcgSamples: samples,
+					lastEcgPacketAtMs: Date.now(),
+					ecgPacketCount: current.ecgPacketCount + 1,
+					ecgSampleCount: current.ecgSampleCount + samples.length,
+					respiratoryRate: estimate
+				}));
+			}
 		});
+		await connection.start();
+		sensorConnection = connection;
 
 		patchState({
-			sessionDeviceName: 'Polar H9',
+			sessionDeviceName: get(store).sessionDeviceName ?? 'Polar H10',
 			isSensorConnected: true,
 			sensorStatus: get(store).sessionStartedAt
-				? 'Connected to heart rate monitor. Session is recording.'
-				: 'Connected to heart rate monitor. Start a session when you are ready.'
+				? 'Connected to Polar H10. Session is recording HR/RR and estimating respiration from raw ECG.'
+				: 'Connected to Polar H10. Start a session when you are ready.'
 		});
 	} catch (error) {
 		patchState({ sensorStatus: describeError(error, 'Could not connect to sensor') });
@@ -1013,6 +1072,11 @@ export function startSharedSession(isSignedIn: boolean) {
 	patchState({
 		sessionStartedAt: new Date().toISOString(),
 		sessionSamples: [],
+		ecgPacketCount: 0,
+		ecgSampleCount: 0,
+		latestEcgSamples: null,
+		lastEcgPacketAtMs: null,
+		respiratoryRate: null,
 		baselineRmssdMs: undefined,
 		baselineRmssdRange: initialState.baselineRmssdRange,
 		baselineHeartRateRange: initialState.baselineHeartRateRange,
@@ -1035,6 +1099,7 @@ export function startSharedSession(isSignedIn: boolean) {
 			? `Study session started. Stay settled for ${state.baselineCaptureSeconds} seconds so we can capture your stress baseline.`
 			: 'Session started. Connect a device or simulate readings to capture data.'
 	});
+	respiratoryRateEstimator.reset();
 }
 
 function feedbackLabelToContextTags(label: BodyLoadFeedbackLabel): string[] {
@@ -1127,16 +1192,24 @@ export function resetSharedDetectionTuning() {
 }
 
 export async function disconnectSharedSensor() {
-	if (!stopSensor) {
+	if (!sensorConnection) {
 		return;
 	}
 
-	await stopSensor();
-	stopSensor = null;
+	await sensorConnection.disconnect();
+	sensorConnection = null;
+	respiratoryRateEstimator.reset();
 
 	const state = get(store);
 	patchState({
 		isSensorConnected: false,
+		latestEcgSamples: null,
+		lastEcgPacketAtMs: null,
+		ecgPacketCount: 0,
+		ecgSampleCount: 0,
+		heartRateStreamStatus: 'Stopped',
+		ecgStreamStatus: 'Stopped',
+		respiratoryRate: null,
 		sensorStatus: state.sessionStartedAt
 			? 'Sensor disconnected. Your session is still open until you end it.'
 			: 'Disconnected from heart rate monitor.'
@@ -1151,7 +1224,7 @@ export async function endSharedSession(userId: string | null): Promise<EndSessio
 
 	patchState({ isSavingSession: true });
 
-	if (stopSensor) {
+	if (sensorConnection) {
 		await disconnectSharedSensor();
 	}
 
