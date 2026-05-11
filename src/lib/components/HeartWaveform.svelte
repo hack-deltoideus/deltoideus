@@ -50,6 +50,9 @@
 	const SAMPLE_STEP_PX = 5;
 	const RAW_MORPH_IN_SECONDS = 2.4;
 	const RAW_MORPH_OUT_SECONDS = 1.2;
+	const RAW_NORMALIZATION_CENTER_SMOOTHING = 0.08;
+	const RAW_NORMALIZATION_RANGE_SMOOTHING = 0.12;
+	const RAW_MIN_HALF_RANGE = 60;
 
 	let simulatedPath = $state('');
 	let rawPath = $state('');
@@ -74,6 +77,8 @@
 	let rawEcgMorph = $state(0);
 	let rawBufferPrimed = $state(false);
 	let rawBufferedSampleCount = 0;
+	let rawDisplayCenter = $state(0);
+	let rawDisplayHalfRange = $state(RAW_MIN_HALF_RANGE);
 
 	$effect(() => {
 		if (lastSessionKey === null) {
@@ -95,6 +100,8 @@
 			rawEcgMorph = 0;
 			rawBufferPrimed = false;
 			rawBufferedSampleCount = 0;
+			rawDisplayCenter = 0;
+			rawDisplayHalfRange = RAW_MIN_HALF_RANGE;
 			lastFrameAt = Date.now();
 			cursorY = height * 0.5;
 		}
@@ -148,6 +155,8 @@
 			rawEcgMorph = 0;
 			rawBufferPrimed = false;
 			rawBufferedSampleCount = 0;
+			rawDisplayCenter = 0;
+			rawDisplayHalfRange = RAW_MIN_HALF_RANGE;
 		}
 
 		rawDisplayQueue = [...rawDisplayQueue, ...ecgSamples].slice(-RAW_QUEUE_MAX);
@@ -260,15 +269,31 @@
 		const rawValues = rawRollingValues.map((sample) => sample.value);
 		const visibleFloor = percentile(rawValues, 0.02);
 		const visibleCeiling = percentile(rawValues, 0.995);
-		const visibleRange = Math.max(visibleCeiling - visibleFloor, 120);
+		const targetCenter = median(rawValues);
+		const targetHalfRange = Math.max(
+			visibleCeiling - targetCenter,
+			targetCenter - visibleFloor,
+			RAW_MIN_HALF_RANGE
+		);
+		rawDisplayCenter = lerp(
+			rawDisplayCenter,
+			targetCenter,
+			RAW_NORMALIZATION_CENTER_SMOOTHING
+		);
+		rawDisplayHalfRange = lerp(
+			rawDisplayHalfRange,
+			targetHalfRange,
+			RAW_NORMALIZATION_RANGE_SMOOTHING
+		);
 		const baselineY = topPadding + usableHeight * 0.5;
 		const rawPoints = rawRollingValues.map((sample, index) => {
 			const normalized = clamp(
-				((rawValues[index] ?? sample.value) - visibleFloor) / visibleRange,
-				0,
+				((rawValues[index] ?? sample.value) - rawDisplayCenter) /
+					Math.max(rawDisplayHalfRange, RAW_MIN_HALF_RANGE),
+				-1,
 				1
 			);
-			const rawY = topPadding + usableHeight - normalized * usableHeight;
+			const rawY = baselineY - normalized * usableHeight * 0.5;
 			return {
 				x: (cursorX * index) / Math.max(rawRollingValues.length - 1, 1),
 				y: lerp(baselineY, rawY, sample.morph)
