@@ -8,7 +8,6 @@
 	import SiteNav from '$lib/components/SiteNav.svelte';
 	import {
 		connectSharedSensor,
-		disconnectSharedSensor,
 		endSharedSession,
 		markSharedDetectionFeedback,
 		resetSharedDetectionTuning,
@@ -86,6 +85,30 @@
 	const displayName = $derived(getDisplayName(currentUser));
 	const selectedDiagnosticSession = $derived(
 		diagnosticSessions.find((session) => session.id === selectedDiagnosticSessionId) ?? null
+	);
+	const liveActionIcon = $derived(
+		!isSensorConnected || isConnecting
+			? 'bluetooth'
+			: sessionStartedAt
+				? 'stop_circle'
+				: 'play_circle'
+	);
+	const liveActionLabel = $derived(
+		!isSensorConnected
+			? isConnecting
+				? 'Connecting...'
+				: 'Connect Device'
+			: sessionStartedAt
+				? isSavingSession
+					? 'Ending Session...'
+					: 'End Session'
+				: 'Start Session'
+	);
+	const liveActionDisabled = $derived(
+		!canUseBluetooth ||
+			isConnecting ||
+			isSavingSession ||
+			(isSensorConnected && !sessionStartedAt && !currentUser)
 	);
 	if (browser) {
 		canUseBluetooth = typeof navigator !== 'undefined' && 'bluetooth' in navigator;
@@ -323,6 +346,20 @@
 		await connectSharedSensor();
 	}
 
+	async function handleLiveAction() {
+		if (!isSensorConnected) {
+			await connectSensor();
+			return;
+		}
+
+		if (sessionStartedAt) {
+			await endSession();
+			return;
+		}
+
+		startSession();
+	}
+
 	function startSession() {
 		startSharedSession(Boolean(currentUser));
 		lastSavedDiagnosticSession = null;
@@ -355,10 +392,6 @@
 
 	function closeScoreDetailsModal() {
 		showScoreDetailsModal = false;
-	}
-
-	async function disconnectSensor() {
-		await disconnectSharedSensor();
 	}
 
 	function formatSignedPercent(value: number | undefined): string {
@@ -521,84 +554,18 @@
 				<div class="data-layout">
 					{#if activePanel === 'ecg'}
 						<div class="viewer-stack">
-							<div class="monitor-top-row diagnosis-{bodyLoadState}">
-								<div class="metrics-panel">
-									<div class="metric-grid rmssd-grid">
-										<div class="metric-card">
-											<p class="metric-label">STRESS SCORE</p>
-											<p class="metric-value">
-												{isSensorConnected ? bodyLoadScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
-											</p>
-										</div>
-										<div class="metric-card">
-											<p class="metric-label">BURNOUT SCORE</p>
-											<p class="metric-value secondary">
-												{isSensorConnected ? burnoutScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
-											</p>
-										</div>
-										<div class="metric-card">
-											<p class="metric-label">RESPIRATORY RATE</p>
-											<p class="metric-value respiratory">{respiratoryRate?.breathsPerMinute ?? '--'}<span> BR/MIN</span></p>
-										</div>
-										<div class="metric-card tag-card">
-											<p class="metric-label">ELEVATED TIME</p>
-											<p class="metric-value secondary">{isSensorConnected ? formatDurationShort(sustainedStressSeconds) : '--'}</p>
-										</div>
-										<div class="metric-card tag-card">
-											<p class="metric-label">SIGNAL QUALITY</p>
-											<p class="metric-value">{isSensorConnected ? signalQualityLevel : '--'}</p>
-										</div>
+							<div class="ecg-card live-monitor-card diagnosis-{bodyLoadState}">
+								<div class="baseline-strip live-baseline-strip">
+									<div class="baseline-row">
+										<p class="saved-title">Baseline capture</p>
+										<p class="baseline-progress">{baselineProgressPercent.toFixed(0)}% of {baselineCaptureSeconds}s</p>
 									</div>
-
-									<div class="baseline-strip">
-										<div class="baseline-row">
-											<p class="saved-title">Baseline capture</p>
-											<p class="baseline-progress">{baselineProgressPercent.toFixed(0)}% of {baselineCaptureSeconds}s</p>
-										</div>
-										<div class="baseline-track">
-											<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
-										</div>
+									<div class="baseline-track">
+										<div class="baseline-fill" style={`width: ${baselineProgressPercent}%`}></div>
 									</div>
 								</div>
 
-								<div class="baseline-panel">
-									<button class="score-help-button" type="button" onclick={openScoreDetailsModal}>
-											<span class="material-symbols-outlined">help</span>
-											<span>How this score works</span>
-									</button>
-
-									<div class="action-stack">
-										<button class="button" onclick={connectSensor} disabled={!canUseBluetooth || isConnecting || isSensorConnected}>
-											<span class="material-symbols-outlined">bluetooth</span>
-											<span>{isConnecting ? 'Connecting...' : 'Connect Device'}</span>
-										</button>
-
-										<button class="button session-button" onclick={sessionStartedAt ? endSession : startSession} disabled={isSavingSession || !currentUser || !isSensorConnected}>
-											<span class="material-symbols-outlined">{sessionStartedAt ? 'stop_circle' : 'play_circle'}</span>
-											<span>
-												{sessionStartedAt
-													? isSavingSession
-														? 'Ending Session...'
-														: 'End Session'
-													: 'Start Session'}
-											</span>
-										</button>
-
-										{#if isSensorConnected}
-											<button class="button button-subtle" onclick={disconnectSensor} disabled={!isSensorConnected}>
-												Disconnect
-											</button>
-										{/if}
-									</div>
-
-									{#if !canUseBluetooth}
-										<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
-									{/if}
-								</div>
-							</div>
-
-							<div class="ecg-card">
-								<div class="monitor-shell">
+								<div class="live-waveform-panel">
 									<HeartWaveform
 										hr={heartRate ?? null}
 										rr={rrMs ?? null}
@@ -610,6 +577,56 @@
 										showMeta={false}
 									/>
 								</div>
+
+								<div class="live-side-panel">
+									<div class="metric-grid live-metric-grid">
+										<div class="metric-card priority-primary">
+											<p class="metric-label">STRESS SCORE</p>
+											<p class="metric-value">
+												{isSensorConnected ? bodyLoadScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
+											</p>
+										</div>
+										<div class="metric-card priority-primary">
+											<p class="metric-label">BURNOUT SCORE</p>
+											<p class="metric-value secondary">
+												{isSensorConnected ? burnoutScore : '--'}{#if isSensorConnected}<span>/100</span>{/if}
+											</p>
+										</div>
+										<div class="metric-card priority-secondary">
+											<p class="metric-label">RESPIRATORY RATE</p>
+											<p class="metric-value respiratory">{respiratoryRate?.breathsPerMinute ?? '--'}<span> BR/MIN</span></p>
+										</div>
+										<div class="metric-card priority-secondary">
+											<p class="metric-label">HR</p>
+											<p class="metric-value">{heartRate ?? '--'}<span> BPM</span></p>
+										</div>
+										<div class="metric-card priority-secondary">
+											<p class="metric-label">HRV</p>
+											<p class="metric-value secondary">{currentRmssdMs ?? '--'}<span> MS</span></p>
+										</div>
+										<div class="metric-card priority-tertiary">
+											<p class="metric-label">ELEVATED TIME</p>
+											<p class="metric-value secondary">{isSensorConnected ? formatDurationShort(sustainedStressSeconds) : '--'}</p>
+										</div>
+										<div class="metric-card priority-tertiary">
+											<p class="metric-label">SIGNAL QUALITY</p>
+											<p class="metric-value">{isSensorConnected ? signalQualityLevel : '--'}</p>
+										</div>
+										<button class="metric-card priority-tertiary score-help-tag" type="button" onclick={openScoreDetailsModal}>
+											<span class="material-symbols-outlined">help</span>
+											<span>How this score works</span>
+										</button>
+									</div>
+
+									<button class="button session-button side-panel-action" onclick={handleLiveAction} disabled={liveActionDisabled}>
+										<span class="material-symbols-outlined">{liveActionIcon}</span>
+										<span>{liveActionLabel}</span>
+									</button>
+
+									{#if !canUseBluetooth}
+										<p class="inline-hint">Use Chrome or Edge over HTTPS or localhost for Web Bluetooth.</p>
+									{/if}
+							</div>
 							</div>
 
 							<div class="saved-panel session-status-panel">
@@ -1079,10 +1096,6 @@
 		margin-top: 1rem;
 	}
 
-	.rmssd-grid {
-		grid-template-columns: repeat(5, minmax(0, 1fr));
-	}
-
 	.metric-grid.compact {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
@@ -1188,26 +1201,6 @@
 		background: linear-gradient(135deg, var(--primary), #128d7f);
 	}
 
-	.score-help-button {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.45rem;
-		width: fit-content;
-		margin-top: 0;
-		padding: 0.7rem 0.85rem;
-		border: 1px solid rgba(160, 174, 197, 0.3);
-		border-radius: 1rem;
-		background: rgba(255, 255, 255, 0.72);
-		cursor: pointer;
-		font: inherit;
-		font-weight: 800;
-		color: var(--primary);
-	}
-
-	.score-help-button:hover {
-		background: rgba(255, 255, 255, 0.92);
-	}
-
 	.feedback-buttons {
 		display: grid;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1226,79 +1219,10 @@
 		gap: 1rem;
 	}
 
-	.monitor-top-row {
-		display: grid;
-		grid-template-columns: minmax(0, 0.9fr) minmax(18rem, 1.1fr);
-		gap: 1rem;
-		align-items: start;
-		padding: 1.15rem;
-		border-radius: 1.5rem;
-		border: 1px solid rgba(160, 174, 197, 0.26);
-		background: color-mix(in srgb, var(--surface-container-low, #eaf1ff) 78%, white);
-	}
-
-	.monitor-top-row .baseline-panel {
-		margin-top: 0;
-	}
-
-	.metrics-panel {
-		display: grid;
-		gap: 0.9rem;
-		max-width: 46rem;
-	}
-
-	.metrics-panel .metric-grid {
-		margin-top: 0;
-	}
-
-	.monitor-top-row .rmssd-grid {
-		grid-template-columns: repeat(6, minmax(0, 1fr));
-	}
-
-	.monitor-top-row .metric-card:not(.tag-card) {
-		grid-column: span 2;
-	}
-
-	.monitor-top-row .tag-card {
-		grid-column: span 3;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem;
-		min-height: 3.5rem;
-		padding: 0.72rem 0.9rem;
-		border-radius: 1.2rem;
-		box-shadow:
-			0 5px 0 0 #dce9ff,
-			0 8px 18px rgba(33, 47, 66, 0.07);
-	}
-
-	.tag-card .metric-label {
-		margin: 0;
-		font-size: 0.68rem;
-		letter-spacing: 0.1em;
-	}
-
-	.tag-card .metric-value {
-		margin: 0;
-		font-size: 1.15rem;
-		letter-spacing: 0;
-		white-space: nowrap;
-	}
-
 	.baseline-strip {
 		padding: 0.9rem 1rem;
 		border-radius: 1.15rem;
 		background: rgba(255, 255, 255, 0.7);
-		border: 1px solid rgba(160, 174, 197, 0.28);
-	}
-
-	.monitor-top-row .baseline-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 0.85rem;
-		align-self: stretch;
-		background: rgba(255, 255, 255, 0.68);
 		border: 1px solid rgba(160, 174, 197, 0.28);
 	}
 
@@ -1308,8 +1232,108 @@
 		background: linear-gradient(180deg, #dce9ff 0%, #eaf1ff 100%);
 	}
 
-	.ecg-card > .monitor-shell {
+	.live-monitor-card {
+		display: grid;
+		grid-template-columns: minmax(24rem, 1.35fr) minmax(20rem, 0.75fr);
+		gap: 1rem;
+		align-items: stretch;
+		padding: 1rem;
+	}
+
+	.live-baseline-strip {
+		grid-column: 1 / -1;
+		padding: 0.8rem 1rem;
+		background: rgba(255, 255, 255, 0.76);
+	}
+
+	.live-waveform-panel {
+		min-width: 0;
 		margin-top: 0;
+	}
+
+	.live-side-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+		min-width: 0;
+		height: 100%;
+	}
+
+	.live-metric-grid {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 0.62rem;
+		margin-top: 0;
+		flex: 1 1 auto;
+		align-content: start;
+	}
+
+	.live-metric-grid .metric-card {
+		min-width: 0;
+		padding: 0.78rem;
+		border-radius: 1rem;
+		background: rgba(255, 255, 255, 0.62);
+		border-color: rgba(160, 174, 197, 0.26);
+		box-shadow: none;
+	}
+
+	.live-metric-grid .priority-primary {
+		grid-column: span 2;
+		padding: 1rem;
+		background: rgba(255, 255, 255, 0.82);
+		border-color: rgba(0, 103, 92, 0.18);
+	}
+
+	.live-metric-grid .priority-secondary {
+		grid-column: span 2;
+	}
+
+	.live-metric-grid .priority-tertiary {
+		grid-column: span 2;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.65rem;
+		padding: 0.64rem 0.72rem;
+		background: rgba(255, 255, 255, 0.42);
+	}
+
+	.live-metric-grid .score-help-tag {
+		width: 100%;
+		border: 1px solid rgba(160, 174, 197, 0.26);
+		cursor: pointer;
+		font: inherit;
+		color: var(--primary);
+	}
+
+	.score-help-tag .material-symbols-outlined {
+		font-size: 1.1rem;
+	}
+
+	.live-metric-grid .priority-primary .metric-value {
+		font-size: 2.15rem;
+	}
+
+	.live-metric-grid .priority-secondary .metric-value {
+		font-size: 1.45rem;
+		letter-spacing: -0.02em;
+	}
+
+	.live-metric-grid .priority-tertiary .metric-label {
+		margin: 0;
+		font-size: 0.64rem;
+		letter-spacing: 0.1em;
+	}
+
+	.live-metric-grid .priority-tertiary .metric-value {
+		margin: 0;
+		font-size: 1rem;
+		letter-spacing: 0;
+		white-space: nowrap;
+		color: var(--on-surface-variant);
+	}
+
+	.side-panel-action {
+		margin-top: auto;
 	}
 
 	.ecg-card-header {
@@ -1335,6 +1359,10 @@
 
 	.monitor-shell {
 		margin-top: 1rem;
+	}
+
+	.live-monitor-card > .live-waveform-panel {
+		margin-top: 0;
 	}
 
 	.metric-value {
@@ -1380,7 +1408,7 @@
 		position: absolute;
 		inset: 0;
 		border: 0;
-		background: rgba(9, 21, 33, 0.48);
+		background: rgba(20, 45, 56, 0.42);
 		backdrop-filter: blur(8px);
 		cursor: pointer;
 	}
@@ -1393,9 +1421,13 @@
 		overflow: auto;
 		padding: 1.35rem;
 		border-radius: 1.8rem;
-		border: 1px solid var(--panel-border);
-		background: var(--panel-bg);
-		box-shadow: var(--shadow-soft);
+		border: 1px solid rgba(0, 103, 92, 0.18);
+		background:
+			linear-gradient(180deg, rgba(234, 241, 255, 0.96), rgba(255, 255, 255, 0.98)),
+			var(--panel-bg);
+		box-shadow:
+			0 14px 0 rgba(220, 233, 255, 0.9),
+			0 24px 54px rgba(33, 47, 66, 0.22);
 	}
 
 	.modal-header {
@@ -1413,7 +1445,7 @@
 		height: 2.6rem;
 		border: 1px solid rgba(160, 174, 197, 0.32);
 		border-radius: 1rem;
-		background: rgba(255, 255, 255, 0.72);
+		background: rgba(255, 255, 255, 0.78);
 		color: var(--on-surface);
 		cursor: pointer;
 	}
@@ -1422,10 +1454,9 @@
 		margin-top: 1rem;
 	}
 
-	.action-stack {
-		display: grid;
-		gap: 0.8rem;
-		margin-top: 1rem;
+	.score-modal .metric-card {
+		background: rgba(255, 255, 255, 0.72);
+		box-shadow: none;
 	}
 
 	.button {
@@ -1616,7 +1647,7 @@
 
 	@media (max-width: 1180px) {
 		.grid,
-		.monitor-top-row {
+		.live-monitor-card {
 			grid-template-columns: 1fr;
 		}
 	}
@@ -1624,15 +1655,27 @@
 	@media (max-width: 700px) {
 		.metric-grid,
 		.metric-grid.compact,
-		.rmssd-grid,
-		.monitor-top-row .rmssd-grid,
 		.feedback-buttons {
 			grid-template-columns: 1fr;
 		}
 
-		.monitor-top-row .metric-card:not(.tag-card),
-		.monitor-top-row .tag-card {
-			grid-column: auto;
+		.live-metric-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+
+		.live-metric-grid .priority-primary,
+		.live-metric-grid .priority-secondary,
+		.live-metric-grid .priority-tertiary {
+			grid-column: span 1;
+		}
+
+		.live-metric-grid .priority-primary {
+			grid-column: span 2;
+		}
+
+		.live-metric-grid .priority-tertiary {
+			display: grid;
+			justify-content: stretch;
 		}
 	}
 

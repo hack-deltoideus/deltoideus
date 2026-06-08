@@ -8,7 +8,11 @@
 		sampleIdleOffset,
 		type PreparedWaveBeat
 	} from '$lib/ecg/waveformGenerator';
-	import { normalizeRr, toSmoothSvgPath } from '$lib/ecg/waveformUtils';
+	import {
+		normalizeRr,
+		toSmoothSvgPath,
+		toSmoothSvgPathWithAnchoredTail
+	} from '$lib/ecg/waveformUtils';
 
 	type Props = {
 		hr: number | null;
@@ -53,6 +57,9 @@
 	const RAW_NORMALIZATION_CENTER_SMOOTHING = 0.08;
 	const RAW_NORMALIZATION_RANGE_SMOOTHING = 0.12;
 	const RAW_MIN_HALF_RANGE = 60;
+	const RAW_CURSOR_ANCHORED_TAIL_POINTS = 6;
+	const RAW_CURSOR_OFFSET_PX = 3;
+	const RAW_LIVE_MORPH_TAIL_POINTS = 18;
 
 	let simulatedPath = $state('');
 	let rawPath = $state('');
@@ -66,6 +73,7 @@
 	let lastRawPacketAt = $state(0);
 	let cursorY = $state(0);
 	const cursorX = $derived(width * 0.92);
+	const rawCursorX = $derived(cursorX - RAW_CURSOR_OFFSET_PX);
 	let worldCursorX = 0;
 	let lastFrameAt = initialNow;
 	let trailPoints: Array<{ x: number; y: number }> = [];
@@ -294,14 +302,18 @@
 				1
 			);
 			const rawY = baselineY - normalized * usableHeight * 0.5;
+			const pointMorph =
+				index >= rawRollingValues.length - RAW_LIVE_MORPH_TAIL_POINTS
+					? rawEcgMorph
+					: sample.morph;
 			return {
-				x: (cursorX * index) / Math.max(rawRollingValues.length - 1, 1),
-				y: lerp(baselineY, rawY, sample.morph)
+				x: (rawCursorX * index) / Math.max(rawRollingValues.length - 1, 1),
+				y: lerp(baselineY, rawY, pointMorph)
 			};
 		});
 
 		cursorY = rawPoints.at(-1)?.y ?? height * 0.5;
-		return toSmoothSvgPath(rawPoints);
+		return toSmoothSvgPathWithAnchoredTail(rawPoints, RAW_CURSOR_ANCHORED_TAIL_POINTS);
 	}
 
 	onMount(() => {
@@ -419,7 +431,7 @@
 			preserveAspectRatio="none"
 			aria-label={label}
 		>
-			<line class="cursor-beam" x1={cursorX} x2={cursorX} y1="0" y2={height}></line>
+			<line class="cursor-beam" x1={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} x2={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} y1="0" y2={height}></line>
 			{#if rawSignalIsFresh(renderNow) || rawEcgMorph > 0}
 				<path class="wave-glow" d={rawPath}></path>
 				<path class="wave-line" d={rawPath}></path>
@@ -427,7 +439,7 @@
 				<path class="wave-glow" d={simulatedPath}></path>
 				<path class="wave-line" d={simulatedPath}></path>
 			{/if}
-			<circle class="cursor-dot" cx={cursorX} cy={cursorY} r="5.8"></circle>
+			<circle class="cursor-dot" cx={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} cy={cursorY} r="5.8"></circle>
 		</svg>
 	</div>
 
