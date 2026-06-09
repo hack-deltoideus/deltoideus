@@ -238,7 +238,15 @@
 						deviceName: targetSession.summary_payload?.deviceInfo?.name ?? targetSession.device_name,
 						captureType: targetSession.summary_payload?.captureType ?? targetSession.capture_type,
 						segmentLengthSeconds: targetSession.summary_payload?.segmentLengthSeconds ?? null,
-						segments: targetSession.summary_payload?.segments ?? []
+						segments: targetSession.summary_payload?.segments ?? [],
+						bodyLoadState: targetSession.summary_payload?.bodyLoadState ?? null,
+						bodyLoadScore: targetSession.summary_payload?.bodyLoadScore ?? null,
+						bodyLoadConfidence: targetSession.summary_payload?.bodyLoadConfidence ?? null,
+						burnoutScore: targetSession.summary_payload?.burnoutScore ?? null,
+						sustainedStressSeconds: targetSession.summary_payload?.sustainedStressSeconds ?? null,
+						activationEvents: targetSession.summary_payload?.activationEvents ?? [],
+						recoveryEvents: targetSession.summary_payload?.recoveryEvents ?? [],
+						feedback: targetSession.summary_payload?.feedback ?? []
 					}
 				})
 			});
@@ -265,12 +273,15 @@
 		const durationSeconds = summary?.durationSeconds ?? targetSession.duration_seconds ?? 0;
 		const sampleCount = summary?.sampleCount ?? targetSession.sample_count;
 		const averageHeartRate = summary?.averageHeartRate ?? targetSession.avg_heart_rate;
-		const averageHrvMs = summary?.averageHrvMs ?? targetSession.avg_hrv_ms;
-		const maxHeartRate = summary?.maxHeartRate ?? targetSession.max_heart_rate;
+		const bodyLoadScore = summary?.bodyLoadScore ?? null;
+		const burnoutScore = summary?.burnoutScore ?? null;
+		const activationCount = summary?.activationEvents?.length ?? 0;
+		const labelCount = summary?.feedback?.length ?? 0;
 
 		return [
 			`Nice work, ${name}. I saved your session and pulled out the key numbers.`,
-			`This run lasted ${formatDuration(durationSeconds)}, captured ${sampleCount} samples, averaged ${formatMetric(averageHeartRate, 1)} bpm, and landed at ${formatMetric(averageHrvMs, 1)} ms HRV with a peak of ${formatMetric(maxHeartRate, 0)} bpm.`
+			`This study block lasted ${formatDuration(durationSeconds)}, captured ${sampleCount} samples, averaged ${formatMetric(averageHeartRate, 1)} bpm, and ended with a stress score of ${formatMetric(bodyLoadScore, 0)}/100 plus a burnout score of ${formatMetric(burnoutScore, 0)}/100.`,
+			`I marked ${activationCount} elevated-stress event${activationCount === 1 ? '' : 's'} and saved ${labelCount} label${labelCount === 1 ? '' : 's'} for personalization.`
 		].join(' ');
 	}
 
@@ -279,6 +290,16 @@
 		const averageHeartRate = summary?.averageHeartRate ?? targetSession.avg_heart_rate;
 		const averageHrvMs = summary?.averageHrvMs ?? targetSession.avg_hrv_ms;
 		const maxHeartRate = summary?.maxHeartRate ?? targetSession.max_heart_rate;
+		const activationCount = summary?.activationEvents?.length ?? 0;
+		const firstRecoverySeconds = summary?.firstRecoverySeconds ?? null;
+
+		if (activationCount > 0) {
+			const recoveryCopy =
+				typeof firstRecoverySeconds === 'number'
+					? ` Your first recovery marker came after about ${formatDuration(firstRecoverySeconds)}.`
+					: '';
+			return `This session included ${activationCount} elevated-stress event${activationCount === 1 ? '' : 's'}, so pair the signal with your label before deciding what it meant.${recoveryCopy} ${summary?.nextSessionSuggestion ?? 'A planned reset before the next long block would be a useful experiment.'}`;
+		}
 
 		if (typeof averageHeartRate === 'number' && typeof averageHrvMs === 'number') {
 			if (averageHeartRate >= 95 || averageHrvMs <= 24) {
@@ -392,12 +413,12 @@
 							<p class="stat-value">{formatMetric(session.summary_payload?.averageHeartRate ?? session.avg_heart_rate, 1)} <span>bpm</span></p>
 						</article>
 						<article class="stat-card">
-							<p class="stat-label">Average HRV</p>
-							<p class="stat-value">{formatMetric(session.summary_payload?.averageHrvMs ?? session.avg_hrv_ms, 1)} <span>ms</span></p>
+							<p class="stat-label">Burnout Score</p>
+							<p class="stat-value">{formatMetric(session.summary_payload?.burnoutScore, 0)} <span>/100</span></p>
 						</article>
 						<article class="stat-card">
-							<p class="stat-label">Peak HR</p>
-							<p class="stat-value">{formatMetric(session.summary_payload?.maxHeartRate ?? session.max_heart_rate, 0)} <span>bpm</span></p>
+							<p class="stat-label">Stress Score</p>
+							<p class="stat-value">{formatMetric(session.summary_payload?.bodyLoadScore, 0)} <span>/100</span></p>
 						</article>
 					</div>
 
@@ -420,7 +441,7 @@
 					<div class="summary-footer">
 						<div class="meta-row">
 							<p class="summary-meta">
-								{session.summary_payload?.sampleCount ?? session.sample_count} samples captured
+								{session.summary_payload?.sampleCount ?? session.sample_count} samples captured · {session.summary_payload?.activationEvents?.length ?? 0} activation events · {session.summary_payload?.feedback?.length ?? 0} labels
 							</p>
 						</div>
 

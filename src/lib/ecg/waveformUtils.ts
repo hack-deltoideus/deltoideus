@@ -89,3 +89,28 @@ export function toSmoothSvgPath(points: Array<{ x: number; y: number }>): string
 
 	return path;
 }
+
+export function toSmoothSvgPathWithAnchoredTail(
+	points: Array<{ x: number; y: number }>,
+	tailPointCount: number
+): string {
+	if (points.length <= 2 || tailPointCount <= 1) {
+		return toSmoothSvgPath(points);
+	}
+
+	const anchoredTailCount = Math.min(Math.max(2, tailPointCount), points.length);
+	const smoothCount = Math.max(1, points.length - anchoredTailCount + 1);
+	const smoothPoints = points.slice(0, smoothCount);
+	const tailPoints = points.slice(smoothCount);
+	let path = toSmoothSvgPath(smoothPoints);
+
+	if (path.length === 0) {
+		return '';
+	}
+
+	for (const point of tailPoints) {
+		path += ` L${point.x.toFixed(2)},${point.y.toFixed(2)}`;
+	}
+
+	return path;
+}

@@ -25,11 +25,11 @@
 				<div class="icon-inner">!</div>
 			</div>
 
-			<h2 id="critical-insight-title">Critical Insight</h2>
+			<h2 id="critical-insight-title">Stress-score check-in</h2>
 			<p id="critical-insight-copy" class="copy">
-				Your overall score has stayed above <span>60</span> for 10 seconds and currently reads
-				<span>{score}</span>. Your heart rate indicates you have reached cognitive decline. It's
-				time to pause and reset.
+				Your stress score has stayed above <span>60</span> and currently reads
+				<span>{score}</span>. Since this is a seated study session, pause for a quick reset
+				and label whether this felt stressful, like normal focus, or like a caffeine, sleep, or illness effect.
 			</p>
 
 			<div class="actions">
@@ -41,7 +41,7 @@
 				</button>
 			</div>
 
-			<p class="footer">Safety protocols active</p>
+			<p class="footer">Recovery prompt active</p>
 		</div>
 	</div>
 {/if}

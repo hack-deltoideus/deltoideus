@@ -11,6 +11,14 @@ create table if not exists public.sensor_sessions (
   avg_hrv_ms numeric(7,2),
   last_hrv_ms numeric(7,2),
   max_heart_rate integer,
+  body_load_state text check (body_load_state in ('settling', 'steady', 'activated', 'recovering')),
+  body_load_score numeric(5,2),
+  body_load_confidence text check (body_load_confidence in ('low', 'possible', 'likely')),
+  burnout_score numeric(5,2),
+  sustained_stress_seconds integer not null default 0,
+  signal_quality jsonb,
+  activation_event_count integer not null default 0,
+  recovery_event_count integer not null default 0,
   sample_count integer not null default 0,
   device_name text,
   capture_type text,
@@ -18,6 +26,36 @@ create table if not exists public.sensor_sessions (
   summary_payload jsonb,
   session_summary jsonb
 );
+
+alter table public.sensor_sessions
+  add column if not exists body_load_state text check (body_load_state in ('settling', 'steady', 'activated', 'recovering')),
+  add column if not exists body_load_score numeric(5,2),
+  add column if not exists body_load_confidence text check (body_load_confidence in ('low', 'possible', 'likely')),
+  add column if not exists burnout_score numeric(5,2),
+  add column if not exists sustained_stress_seconds integer not null default 0,
+  add column if not exists signal_quality jsonb,
+  add column if not exists activation_event_count integer not null default 0,
+  add column if not exists recovery_event_count integer not null default 0;
+
+create table if not exists public.body_load_feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  sensor_session_id uuid references public.sensor_sessions(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  session_elapsed_seconds integer,
+  label text not null check (label in ('felt_stressed', 'normal_focus', 'caffeine_illness_sleep')),
+  body_load_state text check (body_load_state in ('settling', 'steady', 'activated', 'recovering')),
+  body_load_confidence text check (body_load_confidence in ('low', 'possible', 'likely')),
+  signal_quality jsonb,
+  related_event_id text,
+  context_tags text[] not null default '{}'
+);
+
+create index if not exists body_load_feedback_user_id_idx
+  on public.body_load_feedback(user_id);
+
+create index if not exists body_load_feedback_sensor_session_id_idx
+  on public.body_load_feedback(sensor_session_id);
 
 insert into storage.buckets (id, name, public)
 values ('diagnostic-raw', 'diagnostic-raw', false)
@@ -75,6 +113,7 @@ create index if not exists sensor_sessions_raw_data_path_idx
 alter table public.check_ins enable row level security;
 alter table public.sensor_sessions enable row level security;
 alter table public.interventions enable row level security;
+alter table public.body_load_feedback enable row level security;
 
 -- Hackathon-only open policy. Tighten this before production.
 drop policy if exists "Allow public insert check_ins" on public.check_ins;
@@ -129,6 +168,18 @@ create policy "Users can read own sessions"
 drop policy if exists "Users can read own interventions" on public.interventions;
 create policy "Users can read own interventions"
   on public.interventions for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert own body_load_feedback" on public.body_load_feedback;
+create policy "Users can insert own body_load_feedback"
+  on public.body_load_feedback for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can read own body_load_feedback" on public.body_load_feedback;
+create policy "Users can read own body_load_feedback"
+  on public.body_load_feedback for select
   to authenticated
   using (auth.uid() = user_id);
 

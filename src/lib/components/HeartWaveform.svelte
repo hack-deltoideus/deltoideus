@@ -8,14 +8,22 @@
 		sampleIdleOffset,
 		type PreparedWaveBeat
 	} from '$lib/ecg/waveformGenerator';
-	import { normalizeRr, toSmoothSvgPath } from '$lib/ecg/waveformUtils';
+	import {
+		normalizeRr,
+		toSmoothSvgPath,
+		toSmoothSvgPathWithAnchoredTail
+	} from '$lib/ecg/waveformUtils';
 
 	type Props = {
 		hr: number | null;
 		rr: number[] | number | null;
+		ecgSamples?: number[] | null;
+		ecgSampleRateHz?: number;
+		ecgSampleAtMs?: number | null;
 		width?: number;
 		height?: number;
 		label?: string;
+		showMeta?: boolean;
 		sessionKey?: number;
 		sampleAtMs?: number | null;
 	};
@@ -23,30 +31,62 @@
 	let {
 		hr,
 		rr,
+		ecgSamples = null,
+		ecgSampleRateHz = 130,
+		ecgSampleAtMs = null,
 		width = 960,
 		height = 360,
 		label = 'Simulated ECG-style waveform',
+		showMeta = true,
 		sessionKey = 0,
 		sampleAtMs = null
 	}: Props = $props();
 
 	const engine = new WaveformSignalEngine();
-	let path = $state('');
+	const RAW_DISPLAY_RATE_HZ = 130;
+	const RAW_VISIBLE_SECONDS = 4;
+	const RAW_MAX_POINTS = RAW_DISPLAY_RATE_HZ * RAW_VISIBLE_SECONDS;
+	const RAW_INITIAL_BUFFER_SECONDS = 5;
+	const RAW_INITIAL_BUFFER_SAMPLES = RAW_DISPLAY_RATE_HZ * RAW_INITIAL_BUFFER_SECONDS;
+	const RAW_QUEUE_MAX = RAW_INITIAL_BUFFER_SAMPLES + RAW_MAX_POINTS * 2;
+	const RAW_SIGNAL_TIMEOUT_MS = 3000;
+	const STREAM_SPEED_PX_PER_SECOND = 210;
+	const SAMPLE_STEP_PX = 5;
+	const RAW_MORPH_IN_SECONDS = 2.4;
+	const RAW_MORPH_OUT_SECONDS = 1.2;
+	const RAW_NORMALIZATION_CENTER_SMOOTHING = 0.08;
+	const RAW_NORMALIZATION_RANGE_SMOOTHING = 0.12;
+	const RAW_MIN_HALF_RANGE = 60;
+	const RAW_CURSOR_ANCHORED_TAIL_POINTS = 6;
+	const RAW_CURSOR_OFFSET_PX = 3;
+	const RAW_LIVE_MORPH_TAIL_POINTS = 18;
+
+	let simulatedPath = $state('');
+	let rawPath = $state('');
 	let animationFrame: number | null = null;
 	const initialNow = Date.now();
 	let output = $state<WaveformEngineOutput>(engine.getOutput(initialNow));
-	let lastAcceptedKey = $state<string>('');
+	let renderNow = $state(initialNow);
+	let lastAcceptedKey = $state('');
+	let lastRawSampleKey = $state('');
 	let lastSessionKey = $state<number | null>(null);
+	let lastRawPacketAt = $state(0);
 	let cursorY = $state(0);
-	let cursorX = $derived(width * 0.76);
+	const cursorX = $derived(width * 0.92);
+	const rawCursorX = $derived(cursorX - RAW_CURSOR_OFFSET_PX);
 	let worldCursorX = 0;
 	let lastFrameAt = initialNow;
 	let trailPoints: Array<{ x: number; y: number }> = [];
 	let activeBeat = $state<{ beat: PreparedWaveBeat; startedAt: number } | null>(null);
 	let pendingBeats = $state<PreparedWaveBeat[]>([]);
-
-	const STREAM_SPEED_PX_PER_SECOND = 210;
-	const SAMPLE_STEP_PX = 5;
+	let rawDisplayQueue: number[] = [];
+	let rawRollingValues: Array<{ value: number; morph: number }> = [];
+	let rawSampleAccumulator = 0;
+	let rawEcgMorph = $state(0);
+	let rawBufferPrimed = $state(false);
+	let rawBufferedSampleCount = 0;
+	let rawDisplayCenter = $state(0);
+	let rawDisplayHalfRange = $state(RAW_MIN_HALF_RANGE);
 
 	$effect(() => {
 		if (lastSessionKey === null) {
@@ -57,14 +97,21 @@
 		if (sessionKey !== lastSessionKey) {
 			engine.reset();
 			lastAcceptedKey = '';
+			lastRawSampleKey = '';
 			lastSessionKey = sessionKey;
 			activeBeat = null;
 			pendingBeats = [];
-			trailPoints = [];
-			worldCursorX = 0;
+			rawDisplayQueue = [];
+			rawRollingValues = [];
+			rawSampleAccumulator = 0;
+			lastRawPacketAt = 0;
+			rawEcgMorph = 0;
+			rawBufferPrimed = false;
+			rawBufferedSampleCount = 0;
+			rawDisplayCenter = 0;
+			rawDisplayHalfRange = RAW_MIN_HALF_RANGE;
 			lastFrameAt = Date.now();
 			cursorY = height * 0.5;
-			path = '';
 		}
 	});
 
@@ -89,6 +136,46 @@
 
 		if (output.state === 'LIVE') {
 			pendingBeats = [...pendingBeats, prepareBeat(output.params, sampleAtMs)];
+		}
+	});
+
+	$effect(() => {
+		if (!ecgSamples?.length || ecgSampleAtMs === null) {
+			return;
+		}
+
+		const sampleKey = `${ecgSampleAtMs}:${ecgSamples.length}:${ecgSamples[0]}:${ecgSamples.at(-1)}`;
+		if (sampleKey === lastRawSampleKey) {
+			return;
+		}
+
+		const resumingAfterGap =
+			lastRawPacketAt === 0 || ecgSampleAtMs - lastRawPacketAt > RAW_SIGNAL_TIMEOUT_MS;
+		lastRawSampleKey = sampleKey;
+		lastRawPacketAt = ecgSampleAtMs;
+		activeBeat = null;
+		pendingBeats = [];
+
+		if (resumingAfterGap) {
+			rawDisplayQueue = [];
+			rawRollingValues = Array.from({ length: RAW_MAX_POINTS }, () => ({ value: 0, morph: 0 }));
+			rawSampleAccumulator = 0;
+			rawEcgMorph = 0;
+			rawBufferPrimed = false;
+			rawBufferedSampleCount = 0;
+			rawDisplayCenter = 0;
+			rawDisplayHalfRange = RAW_MIN_HALF_RANGE;
+		}
+
+		rawDisplayQueue = [...rawDisplayQueue, ...ecgSamples].slice(-RAW_QUEUE_MAX);
+		rawBufferedSampleCount = Math.min(
+			rawBufferedSampleCount + ecgSamples.length,
+			RAW_INITIAL_BUFFER_SAMPLES
+		);
+		rawBufferPrimed = rawBufferedSampleCount >= RAW_INITIAL_BUFFER_SAMPLES;
+
+		if (rawRollingValues.length === 0) {
+			rawRollingValues = Array.from({ length: RAW_MAX_POINTS }, () => ({ value: 0, morph: 0 }));
 		}
 	});
 
@@ -126,7 +213,45 @@
 		return sampleIdleOffset(worldCursorX, now);
 	}
 
-	function buildVisiblePath(): string {
+	function rawSignalIsFresh(now: number): boolean {
+		return lastRawPacketAt > 0 && now - lastRawPacketAt < RAW_SIGNAL_TIMEOUT_MS;
+	}
+
+	function clamp(value: number, min: number, max: number): number {
+		return Math.max(min, Math.min(max, value));
+	}
+
+	function lerp(from: number, to: number, amount: number): number {
+		return from + (to - from) * amount;
+	}
+
+	function median(values: number[]): number {
+		if (values.length === 0) {
+			return 0;
+		}
+
+		const sorted = [...values].sort((left, right) => left - right);
+		const middle = Math.floor(sorted.length / 2);
+		return sorted.length % 2 === 0 ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2 : (sorted[middle] ?? 0);
+	}
+
+	function percentile(values: number[], ratio: number): number {
+		if (values.length === 0) {
+			return 0;
+		}
+
+		const sorted = [...values].sort((left, right) => left - right);
+		const index = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)));
+		return sorted[index] ?? 0;
+	}
+
+	function appendPoint(x: number, y: number) {
+		trailPoints = [...trailPoints, { x, y }];
+		const minWorldX = worldCursorX - width - SAMPLE_STEP_PX * 4;
+		trailPoints = trailPoints.filter((point) => point.x >= minWorldX);
+	}
+
+	function buildSimulatedPath(): string {
 		const viewportStartX = worldCursorX - cursorX;
 		const visiblePoints = trailPoints
 			.filter((point) => point.x >= viewportStartX - SAMPLE_STEP_PX)
@@ -142,22 +267,112 @@
 		return toSmoothSvgPath(visiblePoints);
 	}
 
+	function buildRawPath(): string {
+		if (rawRollingValues.length < 2) {
+			return '';
+		}
+
+		const topPadding = height * 0.16;
+		const usableHeight = height * 0.68;
+		const rawValues = rawRollingValues.map((sample) => sample.value);
+		const visibleFloor = percentile(rawValues, 0.02);
+		const visibleCeiling = percentile(rawValues, 0.995);
+		const targetCenter = median(rawValues);
+		const targetHalfRange = Math.max(
+			visibleCeiling - targetCenter,
+			targetCenter - visibleFloor,
+			RAW_MIN_HALF_RANGE
+		);
+		rawDisplayCenter = lerp(
+			rawDisplayCenter,
+			targetCenter,
+			RAW_NORMALIZATION_CENTER_SMOOTHING
+		);
+		rawDisplayHalfRange = lerp(
+			rawDisplayHalfRange,
+			targetHalfRange,
+			RAW_NORMALIZATION_RANGE_SMOOTHING
+		);
+		const baselineY = topPadding + usableHeight * 0.5;
+		const rawPoints = rawRollingValues.map((sample, index) => {
+			const normalized = clamp(
+				((rawValues[index] ?? sample.value) - rawDisplayCenter) /
+					Math.max(rawDisplayHalfRange, RAW_MIN_HALF_RANGE),
+				-1,
+				1
+			);
+			const rawY = baselineY - normalized * usableHeight * 0.5;
+			const pointMorph =
+				index >= rawRollingValues.length - RAW_LIVE_MORPH_TAIL_POINTS
+					? rawEcgMorph
+					: sample.morph;
+			return {
+				x: (rawCursorX * index) / Math.max(rawRollingValues.length - 1, 1),
+				y: lerp(baselineY, rawY, pointMorph)
+			};
+		});
+
+		cursorY = rawPoints.at(-1)?.y ?? height * 0.5;
+		return toSmoothSvgPathWithAnchoredTail(rawPoints, RAW_CURSOR_ANCHORED_TAIL_POINTS);
+	}
+
 	onMount(() => {
 		cursorY = height * 0.5;
 		const tick = () => {
 			const now = Date.now();
+			renderNow = now;
 			const deltaSeconds = Math.min((now - lastFrameAt) / 1000, 0.05);
 			lastFrameAt = now;
 			output = engine.getOutput(now);
-			worldCursorX += STREAM_SPEED_PX_PER_SECOND * deltaSeconds;
+			const morphDelta =
+				deltaSeconds /
+				(rawSignalIsFresh(now) ? RAW_MORPH_IN_SECONDS : RAW_MORPH_OUT_SECONDS);
+			rawEcgMorph = clamp(
+				rawEcgMorph + (rawSignalIsFresh(now) ? morphDelta : -morphDelta),
+				0,
+				1
+			);
 
+			if (rawSignalIsFresh(now)) {
+				rawSampleAccumulator += deltaSeconds * RAW_DISPLAY_RATE_HZ;
+				const samplesToDraw = Math.min(Math.floor(rawSampleAccumulator), rawDisplayQueue.length);
+				rawSampleAccumulator = Math.max(0, rawSampleAccumulator - samplesToDraw);
+
+				for (let index = 0; index < samplesToDraw; index += 1) {
+					const sample = rawDisplayQueue.shift();
+					if (typeof sample !== 'number') {
+						continue;
+					}
+
+					rawRollingValues = [...rawRollingValues, { value: sample, morph: rawEcgMorph }].slice(
+						-RAW_MAX_POINTS
+					);
+				}
+
+				rawPath = buildRawPath();
+			}
+
+			if (rawSignalIsFresh(now) && rawBufferPrimed) {
+				animationFrame = window.requestAnimationFrame(tick);
+				return;
+			}
+
+			if (!rawSignalIsFresh(now)) {
+				rawSampleAccumulator = 0;
+				rawBufferedSampleCount = 0;
+				rawBufferPrimed = false;
+			}
+
+			worldCursorX += STREAM_SPEED_PX_PER_SECOND * deltaSeconds;
 			const baselineY = height * 0.5;
 			const offset = sampleCurrentOffset(now);
 			cursorY = baselineY - offset;
-			trailPoints = [...trailPoints, { x: worldCursorX, y: cursorY }];
-			const minWorldX = worldCursorX - width - SAMPLE_STEP_PX * 4;
-			trailPoints = trailPoints.filter((point) => point.x >= minWorldX);
-			path = buildVisiblePath();
+			appendPoint(worldCursorX, cursorY);
+			simulatedPath = buildSimulatedPath();
+			if (!rawSignalIsFresh(now)) {
+				rawPath = '';
+			}
+
 			animationFrame = window.requestAnimationFrame(tick);
 		};
 
@@ -171,21 +386,34 @@
 	});
 
 	const stateLabel = $derived(
-		output.state === 'IDLE'
-			? 'Waiting for heart signal'
-			: output.state === 'CALIBRATING'
-				? 'Calibrating waveform'
-				: output.state === 'LIVE'
-					? 'Live pulse visual'
-					: 'Signal lost'
+		rawSignalIsFresh(renderNow) && !rawBufferPrimed
+			? 'Buffering raw ECG'
+			: rawSignalIsFresh(renderNow) || rawEcgMorph > 0
+			? 'Raw ECG signal'
+			: output.state === 'IDLE'
+				? 'Waiting for heart signal'
+				: output.state === 'CALIBRATING'
+					? 'Calibrating waveform'
+					: output.state === 'LIVE'
+						? 'Live pulse visual'
+						: 'Signal lost'
+	);
+	const stateClass = $derived(
+		rawSignalIsFresh(renderNow) && !rawBufferPrimed
+			? 'calibrating'
+			: rawSignalIsFresh(renderNow) || rawEcgMorph > 0
+				? 'raw'
+				: output.state.toLowerCase()
 	);
 </script>
 
 <div class="wave-shell">
-	<div class="wave-meta">
-		<p class="wave-title">{label}</p>
-		<p class={`wave-state state-${output.state.toLowerCase()}`}>{stateLabel}</p>
-	</div>
+	{#if showMeta}
+		<div class="wave-meta">
+			<p class="wave-title">{label}</p>
+			<p class={`wave-state state-${stateClass}`}>{stateLabel}</p>
+		</div>
+	{/if}
 
 	<div class="monitor-shell">
 		<div class="grid-overlay" aria-hidden="true">
@@ -203,14 +431,21 @@
 			preserveAspectRatio="none"
 			aria-label={label}
 		>
-			<line class="cursor-beam" x1={cursorX} x2={cursorX} y1="0" y2={height}></line>
-			<path class="wave-glow" d={path}></path>
-			<path class="wave-line" d={path}></path>
-			<circle class="cursor-dot" cx={cursorX} cy={cursorY} r="5.8"></circle>
+			<line class="cursor-beam" x1={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} x2={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} y1="0" y2={height}></line>
+			{#if rawSignalIsFresh(renderNow) || rawEcgMorph > 0}
+				<path class="wave-glow" d={rawPath}></path>
+				<path class="wave-line" d={rawPath}></path>
+			{:else}
+				<path class="wave-glow" d={simulatedPath}></path>
+				<path class="wave-line" d={simulatedPath}></path>
+			{/if}
+			<circle class="cursor-dot" cx={rawSignalIsFresh(renderNow) || rawEcgMorph > 0 ? rawCursorX : cursorX} cy={cursorY} r="5.8"></circle>
 		</svg>
 	</div>
 
-	<p class="wave-caption">Visual reacts to live HR and RR data. Not a medical ECG trace.</p>
+	{#if showMeta}
+		<p class="wave-caption">Visual uses raw Polar H10 ECG when available, with HR/RR fallback. Not a medical ECG trace.</p>
+	{/if}
 </div>
 
 <style>
@@ -259,6 +494,12 @@
 		background: rgba(91, 244, 222, 0.55);
 		color: #00594f;
 		box-shadow: inset 0 0 0 1px rgba(0, 103, 92, 0.14);
+	}
+
+	.state-raw {
+		background: rgba(122, 45, 99, 0.14);
+		color: #7a2d63;
+		box-shadow: inset 0 0 0 1px rgba(122, 45, 99, 0.16);
 	}
 
 	.state-signal_lost {
